@@ -5,8 +5,17 @@ const BROKERS = [
   { host: 'broker.hivemq.com', port: 8884, path: '/mqtt' }
 ];
 
+export function normalizeRoomCode(code) {
+  if (!code) return '';
+  const raw = code.trim().toUpperCase().replace(/\s+/g, '');
+  if (!raw.startsWith('PT-') && raw.startsWith('PT')) {
+    return 'PT-' + raw.substring(2);
+  }
+  return raw;
+}
+
 function getTopicPrefix(roomId) {
-  const cleanId = roomId.trim().toUpperCase();
+  const cleanId = normalizeRoomCode(roomId);
   return {
     state: `party-together-ytm/v1/rooms/${cleanId}/state`,
     actions: `party-together-ytm/v1/rooms/${cleanId}/actions`
@@ -14,11 +23,14 @@ function getTopicPrefix(roomId) {
 }
 
 /**
- * Busca o estado de uma sala remotamente via MQTT com fallback e timeout.
- * Primeiro verifica o localStorage local; se não encontrar, consulta o broker em tempo real.
+ * Busca o estado de uma sala remotamente via MQTT nos brokers disponíveis.
+ * Primeiro verifica o localStorage local (para mesma aba/máquina). Se não encontrar,
+ * consulta os brokers WebSocket em paralelo, pois o anfitrião pode ter conectado a
+ * qualquer um deles.
  */
-export async function lookupRoomState(roomId, timeoutMs = 2800) {
-  const cleanId = roomId.trim().toUpperCase();
+export async function lookupRoomState(roomId, timeoutMs = 5000) {
+  const cleanId = normalizeRoomCode(roomId);
+  if (!cleanId) return null;
 
   // 1. Verificação instantânea no armazenamento local (mesmo navegador)
   try {
@@ -33,10 +45,13 @@ export async function lookupRoomState(roomId, timeoutMs = 2800) {
     // Ignore storage parse error
   }
 
-  // 2. Consulta remota via WebSocket no broker público
+  // 2. Consulta remota nos brokers públicos. O host pode estar conectado a qualquer
+  // um deles após o fallback de conexão, então consultar apenas o primeiro pode
+  // fazer uma sala aberta parecer inexistente.
   return new Promise((resolve) => {
     let finished = false;
-    let client = null;
+    let pendingLookups = BROKERS.length;
+    const clients = [];
 
     const timer = setTimeout(() => {
       if (!finished) {
@@ -47,75 +62,122 @@ export async function lookupRoomState(roomId, timeoutMs = 2800) {
     }, timeoutMs);
 
     function cleanup() {
-      if (client) {
+      while (clients.length > 0) {
+        const client = clients.pop();
         try {
           client.disconnect();
         } catch {}
-        client = null;
       }
     }
 
     const { state: stateTopic } = getTopicPrefix(cleanId);
-    const clientId = `lk_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const broker = BROKERS[0];
 
-    try {
-      client = new paho.Client(broker.host, broker.port, broker.path, clientId);
+    function finishLookup(data = null) {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      cleanup();
+      resolve(data);
+    }
 
-      client.onMessageArrived = (msg) => {
-        if (!finished && msg.destinationName === stateTopic) {
+    function markLookupFailed() {
+      pendingLookups -= 1;
+      if (pendingLookups === 0) finishLookup();
+    }
+
+    BROKERS.forEach((broker, index) => {
+      let client;
+      let lookupFinished = false;
+      const markFailedOnce = () => {
+        if (lookupFinished || finished) return;
+        lookupFinished = true;
+        markLookupFailed();
+      };
+
+      try {
+        const clientId = `lk_${Date.now()}_${index}_${Math.random().toString(36).substring(2, 7)}`;
+        client = new paho.Client(broker.host, broker.port, broker.path, clientId);
+        clients.push(client);
+
+        client.onMessageArrived = (msg) => {
+          if (finished || msg.destinationName !== stateTopic) return;
           try {
             const data = JSON.parse(msg.payloadString);
             if (data && data.roomId === cleanId) {
-              finished = true;
-              clearTimeout(timer);
-              cleanup();
-              resolve(data);
-              return;
+              finishLookup(data);
             }
           } catch {}
-        }
-      };
+        };
 
-      client.connect({
-        useSSL: true,
-        timeout: 3,
-        onSuccess: () => {
-          if (!finished && client) {
-            client.subscribe(stateTopic);
+        client.connect({
+          useSSL: true,
+          timeout: 4,
+          onSuccess: () => {
+            if (!finished) {
+              client.subscribe(stateTopic, {
+                onFailure: (err) => {
+                  console.warn(`[RealtimeSync] Falha ao consultar ${broker.host}:`, err?.errorMessage);
+                  markFailedOnce();
+                }
+              });
+            }
+          },
+          onFailure: (err) => {
+            console.warn(`[RealtimeSync] Falha ao consultar ${broker.host}:`, err?.errorMessage);
+            markFailedOnce();
           }
-        },
-        onFailure: () => {
-          if (!finished) {
-            finished = true;
-            clearTimeout(timer);
-            cleanup();
-            resolve(null);
-          }
-        }
-      });
-    } catch {
-      if (!finished) {
-        finished = true;
-        clearTimeout(timer);
-        resolve(null);
+        });
+      } catch (err) {
+        console.warn(`[RealtimeSync] Erro ao consultar ${broker.host}:`, err);
+        markFailedOnce();
       }
-    }
+    });
   });
 }
 
 /**
  * Inicializa a sincronização em tempo real de uma sala.
- * Conecta via MQTT (global para toda internet/outros navegadores) + BroadcastChannel (mesma máquina).
+ * Conecta via MQTT (global para toda a internet/outros navegadores) + BroadcastChannel (mesma máquina).
  */
-export function startRoomSync({ roomId, isHost, onStateUpdate, onAction }) {
-  const cleanId = roomId.trim().toUpperCase();
+export function startRoomSync({ roomId, isHost, initialState, onStateUpdate, onAction }) {
+  const cleanId = normalizeRoomCode(roomId);
   const { state: stateTopic, actions: actionsTopic } = getTopicPrefix(cleanId);
   const clientId = `pt_${isHost ? 'host' : 'guest'}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
   let isDestroyed = false;
   let mqttClient = null;
   let broadcastChannel = null;
+  let lastKnownState = initialState || null;
+  const pendingActions = [];
+
+  function flushStateToMqtt() {
+    if (!mqttClient || !mqttClient.isConnected() || !lastKnownState) return;
+    try {
+      const msg = new paho.Message(JSON.stringify(lastKnownState));
+      msg.destinationName = stateTopic;
+      msg.retained = true;
+      msg.qos = 1;
+      mqttClient.send(msg);
+      console.log('[RealtimeSync] Estado da sala enviado com sucesso via MQTT (retained=true)');
+    } catch (err) {
+      console.warn('[RealtimeSync] Erro ao enviar estado via MQTT:', err);
+    }
+  }
+
+  function flushPendingActions() {
+    if (!mqttClient || !mqttClient.isConnected()) return;
+    while (pendingActions.length > 0) {
+      const action = pendingActions.shift();
+      try {
+        const msg = new paho.Message(JSON.stringify(action));
+        msg.destinationName = actionsTopic;
+        msg.qos = 1;
+        mqttClient.send(msg);
+      } catch (err) {
+        console.warn('[RealtimeSync] Erro ao enviar ação pendente via MQTT:', err);
+      }
+    }
+  }
 
   // 1. Canal local para comunicação instantânea entre abas no mesmo navegador
   try {
@@ -170,12 +232,15 @@ export function startRoomSync({ roomId, isHost, onStateUpdate, onAction }) {
         cleanSession: true,
         onSuccess: () => {
           if (isDestroyed || !mqttClient) return;
-          // Inscreve-se no tópico de estado
+          console.log(`[RealtimeSync] Conectado ao MQTT broker como ${isHost ? 'HOST' : 'GUEST'}`);
           mqttClient.subscribe(stateTopic);
 
-          // Se for anfitrião, inscreve-se também no tópico de ações vindas dos convidados
           if (isHost) {
             mqttClient.subscribe(actionsTopic);
+            // Publica imediatamente o estado inicial retido da sala
+            flushStateToMqtt();
+          } else {
+            flushPendingActions();
           }
         },
         onFailure: (err) => {
@@ -197,44 +262,37 @@ export function startRoomSync({ roomId, isHost, onStateUpdate, onAction }) {
   return {
     broadcastState(state) {
       if (isDestroyed) return;
+      lastKnownState = state;
 
-      // Atualiza localStorage como cache local
+      // 1. Atualiza localStorage como cache local
       try {
         localStorage.setItem(`party_room_${cleanId}`, JSON.stringify(state));
       } catch {}
 
-      // Envia no BroadcastChannel local
+      // 2. Envia no BroadcastChannel local
       if (broadcastChannel) {
         try {
           broadcastChannel.postMessage({ type: 'ROOM_STATE', payload: state });
         } catch {}
       }
 
-      // Envia no MQTT com retain=true para que novos participantes recebam imediatamente
+      // 3. Envia no MQTT ou fica pendente para envio imediato assim que conectar
       if (mqttClient && mqttClient.isConnected()) {
-        try {
-          const msg = new paho.Message(JSON.stringify(state));
-          msg.destinationName = stateTopic;
-          msg.retained = true;
-          msg.qos = 1;
-          mqttClient.send(msg);
-        } catch (err) {
-          console.warn('[RealtimeSync] Erro ao enviar estado via MQTT:', err);
-        }
+        flushStateToMqtt();
       }
     },
 
     sendAction(action) {
       if (isDestroyed) return;
 
-      // Dispara via BroadcastChannel local
+      // 1. Dispara no BroadcastChannel local
       if (broadcastChannel) {
         try {
           broadcastChannel.postMessage({ type: 'ACTION', payload: action });
         } catch {}
       }
 
-      // Dispara via MQTT para o Host
+      // 2. Dispara no MQTT
       if (mqttClient && mqttClient.isConnected()) {
         try {
           const msg = new paho.Message(JSON.stringify(action));
@@ -244,6 +302,8 @@ export function startRoomSync({ roomId, isHost, onStateUpdate, onAction }) {
         } catch (err) {
           console.warn('[RealtimeSync] Erro ao enviar ação via MQTT:', err);
         }
+      } else {
+        pendingActions.push(action);
       }
     },
 
