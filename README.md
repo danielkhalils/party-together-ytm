@@ -31,7 +31,7 @@ Seja para estudar com amigos, animar uma chamada no Discord ou curtir uma festa 
 - **Controles Exclusivos do Host**: Apenas o anfitrião possui permissão para pausar, dar play ou pular faixas, garantindo a ordem da festa.
 
 ### 🔍 2. Busca e Catálogo do YouTube Music
-- **Busca em Tempo Real**: Campo de pesquisa conectado diretamente à API não oficial do YouTube Music via middleware Vite com debounce automático (450ms).
+- **Busca em Tempo Real**: Campo de pesquisa conectado à API do YouTube Music via Serverless Function (Vercel) e middleware Vite local com debounce automático (450ms).
 - **Suporte a Links Diretos**: Possibilidade de colar links diretos do YouTube ou IDs de vídeo (`watch?v=...` ou `youtu.be/...`).
 - **Início Imediato ou Enfileiramento**: Se nenhuma música estiver tocando, a primeira faixa selecionada toca instantaneamente; caso contrário, vai para a fila.
 
@@ -77,6 +77,8 @@ Seja para estudar com amigos, animar uma chamada no Discord ou curtir uma festa 
 
 ```text
 party-together-ytm/
+├── api/
+│   └── search.js           # Serverless Function da busca de músicas (Vercel & Dev local)
 ├── public/                 # Favicons e ativos estáticos da aplicação
 ├── src/
 │   ├── assets/             # Recursos de mídia e imagens
@@ -86,7 +88,8 @@ party-together-ytm/
 │   └── main.jsx            # Ponto de montagem React no DOM
 ├── index.html              # Template HTML principal
 ├── package.json            # Dependências e scripts do projeto
-├── vite.config.js          # Configuração do Vite + middleware local para a rota /api/search
+├── vercel.json             # Configuração de rotas e rewrites da Vercel
+├── vite.config.js          # Configuração do Vite + integração com rota de busca local
 └── .oxlintrc.json          # Regras de linting do Oxlint
 ```
 
