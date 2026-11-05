@@ -2,8 +2,6 @@
 
 <div align="center">
 
-![Party Together Banner](https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?auto=format&fit=crop&w=1200&q=80)
-
 **Ouça YouTube Music sincronizado em tempo real com seus amigos, monte filas colaborativas com votação e cante com letras sincronizadas no estilo BetterLyrics.**
 
 [![React](https://img.shields.io/badge/React-19.3.1-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev/)
