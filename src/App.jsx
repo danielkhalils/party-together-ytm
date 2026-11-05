@@ -106,6 +106,40 @@ function extractYouTubeId(input) {
   return match && match[2].length === 11 ? match[2] : null;
 }
 
+function createPlaylistItem(track, addedBy, status = 'queued') {
+  return {
+    ...track,
+    id: 'track_' + Math.random().toString(36).substring(2, 10),
+    addedBy,
+    votes: 1,
+    status
+  };
+}
+
+function ensureRoomPlaylist(room) {
+  if (!room || Array.isArray(room.playlist)) return room;
+
+  const playlist = (room.queue || []).map((item) => ({ ...item, status: 'queued' }));
+  let playback = room.playback;
+
+  if (playback?.videoId) {
+    const playlistItemId = playback.playlistItemId || `playing_${playback.videoId}`;
+    playlist.unshift({
+      id: playlistItemId,
+      videoId: playback.videoId,
+      title: playback.title,
+      artist: playback.artist,
+      thumbnail: playback.thumbnail,
+      addedBy: playback.addedBy || 'Anfitrião',
+      votes: 0,
+      status: 'playing'
+    });
+    playback = { ...playback, playlistItemId };
+  }
+
+  return { ...room, playback, playlist };
+}
+
 // Faz o parse do formato LRC "[00:12.50] Letra..." para array de objetos { time, text }
 function parseSyncedLyrics(lrcText) {
   if (!lrcText) return [];
@@ -148,6 +182,9 @@ export default function App() {
 
   // Estado Sincronizado da Sala
   const [roomState, setRoomState] = useState(null);
+  const [roomBrokerIndex, setRoomBrokerIndex] = useState(null);
+  const roomRevisionRef = useRef(0);
+  const joinedRoomConfirmedRef = useRef(false);
 
   // Estados Locais do Player no PC de cada usuário
   const [audioUnlocked, setAudioUnlocked] = useState(false);
@@ -229,16 +266,28 @@ export default function App() {
     const sync = startRoomSync({
       roomId: currentRoomId,
       isHost,
+      brokerIndex: roomBrokerIndex,
       onStateUpdate: (remoteState) => {
+        const nextRoom = ensureRoomPlaylist(remoteState);
+        if (!isHostRef.current && (nextRoom.members || []).some((member) => member.id === userId)) {
+          joinedRoomConfirmedRef.current = true;
+        }
         setRoomState((prev) => {
-          if (!prev) return remoteState;
+          if (!prev) {
+            roomRevisionRef.current = Number(nextRoom.stateVersion) || 0;
+            return nextRoom;
+          }
+          const currentVersion = Number(prev.stateVersion) || 0;
+          const remoteVersion = Number(nextRoom.stateVersion) || 0;
+          // Ignora snapshots antigos que podem chegar atrasados pelo MQTT.
+          if (remoteVersion < currentVersion) return prev;
           const currentTimestamp = prev.playback?.updatedAt || 0;
-          const remoteTimestamp = remoteState.playback?.updatedAt || 0;
-          // Anfitrião mantém controle se a atualização externa for mais antiga
-          if (isHostRef.current && remoteTimestamp < currentTimestamp) {
+          const remoteTimestamp = nextRoom.playback?.updatedAt || 0;
+          if (isHostRef.current && remoteVersion === currentVersion && remoteTimestamp < currentTimestamp) {
             return prev;
           }
-          return remoteState;
+          roomRevisionRef.current = Math.max(roomRevisionRef.current, remoteVersion);
+          return nextRoom;
         });
       },
       onAction: (action) => {
@@ -248,24 +297,49 @@ export default function App() {
     });
 
     syncServiceRef.current = sync;
+    let joinRetryTimer = null;
 
     if (isHost) {
+      joinedRoomConfirmedRef.current = true;
       sync.broadcastState(roomStateRef.current);
+    } else {
+      const sendJoinAction = () => sync.sendAction({
+          type: 'USER_JOINED',
+          member: {
+            id: userId,
+            name: username.trim(),
+            avatar: userAvatar,
+            isHost: false
+          }
+        });
+      joinedRoomConfirmedRef.current = false;
+      sendJoinAction();
+      joinRetryTimer = setInterval(() => {
+        if (!joinedRoomConfirmedRef.current) sendJoinAction();
+      }, 5000);
     }
 
     return () => {
+      if (joinRetryTimer) clearInterval(joinRetryTimer);
       sync.destroy();
       syncServiceRef.current = null;
     };
-  }, [inRoom, roomState?.roomId, isHost]);
+  }, [inRoom, roomState?.roomId, isHost, roomBrokerIndex, userId, username, userAvatar]);
 
   const broadcastRoomState = (newState) => {
-    setRoomState(newState);
+    const nextVersion = Math.max(
+      roomRevisionRef.current,
+      Number(roomStateRef.current?.stateVersion) || 0,
+      Number(newState.stateVersion) || 0
+    ) + 1;
+    roomRevisionRef.current = nextVersion;
+    const stateWithVersion = ensureRoomPlaylist({ ...newState, stateVersion: nextVersion });
+    setRoomState(stateWithVersion);
     if (syncServiceRef.current) {
-      syncServiceRef.current.broadcastState(newState);
+      syncServiceRef.current.broadcastState(stateWithVersion);
     } else {
       try {
-        localStorage.setItem(`party_room_${newState.roomId}`, JSON.stringify(newState));
+        localStorage.setItem(`party_room_${stateWithVersion.roomId}`, JSON.stringify(stateWithVersion));
       } catch {}
     }
   };
@@ -281,32 +355,31 @@ export default function App() {
 
       // Se não havia nenhuma música tocando na sala, começa imediatamente!
       if (!currentRoom.playback.videoId) {
+        const playlistItem = createPlaylistItem(track, action.senderName || 'Convidado', 'playing');
         if (playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
           playerRef.current.loadVideoById(track.videoId);
         }
         broadcastRoomState({
           ...currentRoom,
+          playlist: [...(currentRoom.playlist || []), playlistItem],
           playback: {
             videoId: track.videoId,
             title: track.title,
             artist: track.artist,
             thumbnail: track.thumbnail,
             addedBy: action.senderName || 'Convidado',
+            playlistItemId: playlistItem.id,
             isPlaying: true,
             trackPosition: 0,
             updatedAt: Date.now()
           }
         });
       } else {
-        const newQueueItem = {
-          ...track,
-          id: 'q_' + Math.random().toString(36).substring(2, 9),
-          addedBy: action.senderName || 'Convidado',
-          votes: 1
-        };
+        const newQueueItem = createPlaylistItem(track, action.senderName || 'Convidado');
         broadcastRoomState({
           ...currentRoom,
-          queue: [...(currentRoom.queue || []), newQueueItem]
+          queue: [...(currentRoom.queue || []), newQueueItem],
+          playlist: [...(currentRoom.playlist || []), newQueueItem]
         });
       }
     } else if (action.type === 'VOTE_TRACK') {
@@ -321,17 +394,21 @@ export default function App() {
       });
     } else if (action.type === 'USER_JOINED') {
       if (!action.member || !action.member.id) return;
-      const exists = (currentRoom.members || []).some((m) => m.id === action.member.id);
-      if (!exists) {
-        broadcastRoomState({
-          ...currentRoom,
-          members: [...(currentRoom.members || []), action.member]
-        });
-      }
+      const members = currentRoom.members || [];
+      const member = { ...action.member, isHost: false };
+      const memberIndex = members.findIndex((m) => m.id === member.id);
+      if (memberIndex >= 0 && members[memberIndex].name === member.name && members[memberIndex].avatar === member.avatar) return;
+      const updatedMembers = memberIndex >= 0
+        ? members.map((existing, index) => index === memberIndex ? { ...existing, ...member } : existing)
+        : [...members, member];
+      broadcastRoomState({ ...currentRoom, members: updatedMembers });
     } else if (action.type === 'USER_LEFT') {
+      const members = currentRoom.members || [];
+      const updatedMembers = members.filter((m) => m.id !== action.userId);
+      if (updatedMembers.length === members.length) return;
       broadcastRoomState({
         ...currentRoom,
-        members: (currentRoom.members || []).filter((m) => m.id !== action.userId)
+        members: updatedMembers
       });
     }
   };
@@ -513,6 +590,20 @@ export default function App() {
                 if (isHostRef.current) {
                   handleSkipNextRef.current();
                 }
+                return;
+              }
+
+              // Convidados não controlam play/pause. Se o player local for pausado
+              // enquanto a sala continua tocando, retoma sem alterar o estado da sala.
+              if (event.data === window.YT.PlayerState.PAUSED && !isHostRef.current) {
+                const sharedPlayback = roomStateRef.current?.playback;
+                if (sharedPlayback?.isPlaying) {
+                  setTimeout(() => {
+                    if (!isHostRef.current && roomStateRef.current?.playback?.isPlaying) {
+                      playerRef.current?.playVideo();
+                    }
+                  }, 0);
+                }
               }
             },
             onError: (err) => {
@@ -680,9 +771,14 @@ export default function App() {
         trackPosition: 0,
         updatedAt: Date.now()
       },
-      queue: []
+      queue: [],
+      playlist: [],
+      stateVersion: 0
     };
 
+    roomRevisionRef.current = 0;
+    joinedRoomConfirmedRef.current = true;
+    setRoomBrokerIndex(null);
     try {
       localStorage.setItem(`party_room_${generatedRoomId}`, JSON.stringify(newRoom));
     } catch {}
@@ -712,13 +808,15 @@ export default function App() {
     setErrorMsg('');
 
     try {
-      const foundRoom = await lookupRoomState(cleanCode);
+      const lookupResult = await lookupRoomState(cleanCode);
 
-      if (!foundRoom) {
+      if (!lookupResult) {
         setErrorMsg('Sala não encontrada! Verifique o código e certifique-se de que a sala está aberta.');
         setIsJoiningRoom(false);
         return;
       }
+
+      const foundRoom = lookupResult.state;
 
       if (foundRoom.pinCode && foundRoom.pinCode !== pinInput.trim()) {
         setErrorMsg('Código PIN incorreto para esta sala.');
@@ -738,10 +836,13 @@ export default function App() {
             }
           ];
 
-      const updatedRoom = {
+      const updatedRoom = ensureRoomPlaylist({
         ...foundRoom,
         members: updatedMembers
-      };
+      });
+      roomRevisionRef.current = Number(updatedRoom.stateVersion) || 0;
+      joinedRoomConfirmedRef.current = false;
+      setRoomBrokerIndex(lookupResult.brokerIndex);
 
       try {
         localStorage.setItem(`party_room_${cleanCode}`, JSON.stringify(updatedRoom));
@@ -784,19 +885,23 @@ export default function App() {
 
   // Controles do Anfitrião: Avançar para a próxima música da fila
   const handleSkipNext = () => {
-    const currentRoom = roomStateRef.current;
+    const currentRoom = ensureRoomPlaylist(roomStateRef.current);
     if (!isHostRef.current || !currentRoom) return;
 
     // Se a fila estiver vazia, apenas encerra a reprodução
     if (!currentRoom.queue || currentRoom.queue.length === 0) {
       broadcastRoomState({
         ...currentRoom,
+        playlist: (currentRoom.playlist || []).map((item) =>
+          item.id === currentRoom.playback?.playlistItemId ? { ...item, status: 'played' } : item
+        ),
         playback: {
           videoId: null,
           title: 'Fila vazia',
           artist: 'Adicione mais músicas para continuar a festa!',
           thumbnail: null,
           addedBy: null,
+          playlistItemId: null,
           isPlaying: false,
           trackPosition: 0,
           updatedAt: Date.now()
@@ -815,12 +920,18 @@ export default function App() {
 
     broadcastRoomState({
       ...currentRoom,
+      playlist: (currentRoom.playlist || []).map((item) => {
+        if (item.id === currentRoom.playback?.playlistItemId) return { ...item, status: 'played' };
+        if (item.id === nextTrack.id) return { ...item, status: 'playing' };
+        return item;
+      }),
       playback: {
         videoId: nextTrack.videoId,
         title: nextTrack.title,
         artist: nextTrack.artist,
         thumbnail: nextTrack.thumbnail,
         addedBy: nextTrack.addedBy,
+        playlistItemId: nextTrack.id,
         isPlaying: true,
         trackPosition: 0,
         updatedAt: Date.now()
@@ -837,18 +948,21 @@ export default function App() {
 
     if (isHostRef.current) {
       if (!currentRoom.playback.videoId) {
+        const playlistItem = createPlaylistItem(track, username, 'playing');
         if (playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
           playerRef.current.loadVideoById(track.videoId);
         }
 
         broadcastRoomState({
           ...currentRoom,
+          playlist: [...(currentRoom.playlist || []), playlistItem],
           playback: {
             videoId: track.videoId,
             title: track.title,
             artist: track.artist,
             thumbnail: track.thumbnail,
             addedBy: username,
+            playlistItemId: playlistItem.id,
             isPlaying: true,
             trackPosition: 0,
             updatedAt: Date.now()
@@ -858,16 +972,12 @@ export default function App() {
         return;
       }
 
-      const newQueueItem = {
-        ...track,
-        id: 'q_' + Math.random().toString(36).substring(2, 9),
-        addedBy: username,
-        votes: 1
-      };
+      const newQueueItem = createPlaylistItem(track, username);
 
       broadcastRoomState({
         ...currentRoom,
-        queue: [...(currentRoom.queue || []), newQueueItem]
+        queue: [...(currentRoom.queue || []), newQueueItem],
+        playlist: [...(currentRoom.playlist || []), newQueueItem]
       });
       setActiveTab('queue');
     } else {
@@ -956,6 +1066,12 @@ export default function App() {
     const s = Math.floor(sec % 60);
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
+
+  const playlistToDisplay = roomState ? [
+    ...(roomState.playlist || []).filter((item) => item.status === 'playing'),
+    ...(roomState.queue || []).map((item) => ({ ...item, status: 'queued' })),
+    ...(roomState.playlist || []).filter((item) => item.status === 'played')
+  ] : [];
 
   // ============================================================================
   // TELA 1: LOGIN / LOBBY COM FUNDO MOSAICO DE ÁLBUNS ESTILO NETFLIX & SPOTIFY
@@ -1188,6 +1304,8 @@ export default function App() {
                 syncServiceRef.current = null;
               }
               setInRoom(false);
+              joinedRoomConfirmedRef.current = false;
+              setRoomBrokerIndex(null);
               if (playerRef.current) {
                 playerRef.current.destroy();
                 playerRef.current = null;
@@ -1370,7 +1488,7 @@ export default function App() {
                   : 'bg-zinc-950 text-zinc-400 hover:text-white'
                   }`}
               >
-                <ListMusic className="w-3.5 h-3.5" /> Fila ({roomState.queue.length})
+                <ListMusic className="w-3.5 h-3.5" /> Playlist ({roomState.playlist?.length ?? roomState.queue.length})
               </button>
 
               <button
@@ -1463,13 +1581,13 @@ export default function App() {
             </div>
           )}
 
-          {/* ABA 2: FILA DA FESTA (INICIA VAZIA) */}
+          {/* ABA 2: PLAYLIST DA FESTA (MANTÉM AS FAIXAS ATÉ O FIM DA SESSÃO) */}
           {activeTab === 'queue' && (
             <div className="flex-1 space-y-2.5 overflow-y-auto max-h-[440px] pr-1">
-              {roomState.queue.length === 0 ? (
+              {playlistToDisplay.length === 0 ? (
                 <div className="text-center py-16 text-zinc-500 flex flex-col items-center">
                   <PartyTogetherLogo className="w-12 h-12 mb-3 opacity-60" iconSize="w-6 h-6" />
-                  <p className="text-sm font-medium text-zinc-300">A fila está vazia no momento</p>
+                  <p className="text-sm font-medium text-zinc-300">A playlist está vazia no momento</p>
                   <button
                     onClick={() => setActiveTab('search')}
                     className="mt-3 px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs text-red-400 font-semibold transition cursor-pointer"
@@ -1478,7 +1596,7 @@ export default function App() {
                   </button>
                 </div>
               ) : (
-                roomState.queue.map((item, idx) => (
+                playlistToDisplay.map((item, idx) => (
                   <div
                     key={item.id}
                     className="flex items-center justify-between gap-3 p-3 rounded-2xl bg-zinc-950/80 border border-zinc-800/80 hover:border-zinc-700 transition"
@@ -1492,21 +1610,27 @@ export default function App() {
                         alt={item.title}
                         className="w-12 h-12 rounded-xl object-cover shrink-0"
                       />
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold truncate">{item.title}</p>
-                        <p className="text-xs text-zinc-400 truncate">
-                          {item.artist} • <span className="text-zinc-500">por {item.addedBy}</span>
-                        </p>
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold truncate">{item.title}</p>
+                          <p className="text-xs text-zinc-400 truncate">
+                            {item.artist} • <span className="text-zinc-500">por {item.addedBy}</span>
+                          </p>
+                        </div>
                       </div>
-                    </div>
 
-                    <button
-                      onClick={() => handleVoteTrack(item.id)}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold shrink-0 transition cursor-pointer"
-                    >
-                      <ThumbsUp className="w-3.5 h-3.5 text-red-400" />
-                      <span>{item.votes}</span>
-                    </button>
+                    {item.status === 'queued' ? (
+                      <button
+                        onClick={() => handleVoteTrack(item.id)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold shrink-0 transition cursor-pointer"
+                      >
+                        <ThumbsUp className="w-3.5 h-3.5 text-red-400" />
+                        <span>{item.votes}</span>
+                      </button>
+                    ) : (
+                      <span className={`text-[10px] uppercase tracking-wide font-bold shrink-0 ${item.status === 'playing' ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                        {item.status === 'playing' ? 'Tocando' : 'Já tocou'}
+                      </span>
+                    )}
                   </div>
                 ))
               )}

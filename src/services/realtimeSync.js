@@ -23,10 +23,11 @@ function getTopicPrefix(roomId) {
 }
 
 /**
- * Busca o estado de uma sala remotamente via MQTT nos brokers disponíveis.
+ * Busca o estado e o broker de uma sala via MQTT nos brokers disponíveis.
  * Primeiro verifica o localStorage local (para mesma aba/máquina). Se não encontrar,
  * consulta os brokers WebSocket em paralelo, pois o anfitrião pode ter conectado a
- * qualquer um deles.
+ * qualquer um deles. O broker encontrado é devolvido para que o convidado envie
+ * suas ações ao mesmo lugar que o anfitrião está ouvindo.
  */
 export async function lookupRoomState(roomId, timeoutMs = 5000) {
   const cleanId = normalizeRoomCode(roomId);
@@ -38,7 +39,7 @@ export async function lookupRoomState(roomId, timeoutMs = 5000) {
     if (localRaw) {
       const parsed = JSON.parse(localRaw);
       if (parsed && parsed.roomId === cleanId) {
-        return parsed;
+        return { state: parsed, brokerIndex: null };
       }
     }
   } catch {
@@ -72,12 +73,12 @@ export async function lookupRoomState(roomId, timeoutMs = 5000) {
 
     const { state: stateTopic } = getTopicPrefix(cleanId);
 
-    function finishLookup(data = null) {
+    function finishLookup(data = null, brokerIndex = null) {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
       cleanup();
-      resolve(data);
+      resolve(data ? { state: data, brokerIndex } : null);
     }
 
     function markLookupFailed() {
@@ -104,7 +105,7 @@ export async function lookupRoomState(roomId, timeoutMs = 5000) {
           try {
             const data = JSON.parse(msg.payloadString);
             if (data && data.roomId === cleanId) {
-              finishLookup(data);
+              finishLookup(data, index);
             }
           } catch {}
         };
@@ -139,7 +140,7 @@ export async function lookupRoomState(roomId, timeoutMs = 5000) {
  * Inicializa a sincronização em tempo real de uma sala.
  * Conecta via MQTT (global para toda a internet/outros navegadores) + BroadcastChannel (mesma máquina).
  */
-export function startRoomSync({ roomId, isHost, initialState, onStateUpdate, onAction }) {
+export function startRoomSync({ roomId, isHost, initialState, brokerIndex: preferredBrokerIndex, onStateUpdate, onAction }) {
   const cleanId = normalizeRoomCode(roomId);
   const { state: stateTopic, actions: actionsTopic } = getTopicPrefix(cleanId);
   const clientId = `pt_${isHost ? 'host' : 'guest'}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
@@ -194,7 +195,7 @@ export function startRoomSync({ roomId, isHost, initialState, onStateUpdate, onA
   } catch {}
 
   // 2. Conexão global MQTT WebSocket
-  let brokerIndex = 0;
+  let brokerIndex = Number.isInteger(preferredBrokerIndex) ? preferredBrokerIndex : 0;
 
   function connectMqtt() {
     if (isDestroyed) return;
