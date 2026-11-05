@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { lookupRoomState, startRoomSync } from './services/realtimeSync.js';
 import {
   Play,
   Pause,
@@ -143,6 +144,7 @@ export default function App() {
   const [pinInput, setPinInput] = useState('1234');
   const [errorMsg, setErrorMsg] = useState('');
   const [copied, setCopied] = useState(false);
+  const [isJoiningRoom, setIsJoiningRoom] = useState(false);
 
   // Estado Sincronizado da Sala
   const [roomState, setRoomState] = useState(null);
@@ -172,11 +174,23 @@ export default function App() {
 
   const playerRef = useRef(null);
   const ytApiReady = useRef(false);
-  const channelRef = useRef(null);
   const activeLyricRef = useRef(null);
   const lyricsContainerRef = useRef(null);
+  const syncServiceRef = useRef(null);
 
-  const isHost = roomState && roomState.hostId === userId;
+  const isHost = Boolean(roomState && roomState.hostId === userId);
+
+  // Refs de sincronização para garantir que callbacks e eventos nunca fiquem com closure defasada
+  const roomStateRef = useRef(roomState);
+  roomStateRef.current = roomState;
+
+  const isHostRef = useRef(isHost);
+  isHostRef.current = isHost;
+
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
+
+  const handleSkipNextRef = useRef(() => {});
 
   // 1. Atualiza o Favicon do navegador com o novo ícone da aplicação
   useEffect(() => {
@@ -207,32 +221,117 @@ export default function App() {
     }
   }, []);
 
-  // 3. Canal de Sincronização em Tempo Real (BroadcastChannel entre abas)
+  // 3. Sincronização em Tempo Real (Global MQTT WebSockets + BroadcastChannel Local)
   useEffect(() => {
-    const channel = new BroadcastChannel('party_together_sync_channel');
-    channelRef.current = channel;
+    if (!inRoom || !roomState?.roomId) return;
 
-    channel.onmessage = (event) => {
-      const { type, payload } = event.data;
-      if (type === 'ROOM_UPDATE') {
+    const currentRoomId = roomState.roomId;
+    const sync = startRoomSync({
+      roomId: currentRoomId,
+      isHost,
+      onStateUpdate: (remoteState) => {
         setRoomState((prev) => {
-          if (!prev || prev.roomId !== payload.roomId) return prev;
-          return payload;
+          if (!prev) return remoteState;
+          const currentTimestamp = prev.playback?.updatedAt || 0;
+          const remoteTimestamp = remoteState.playback?.updatedAt || 0;
+          // Anfitrião mantém controle se a atualização externa for mais antiga
+          if (isHostRef.current && remoteTimestamp < currentTimestamp) {
+            return prev;
+          }
+          return remoteState;
         });
-        localStorage.setItem(`party_room_${payload.roomId}`, JSON.stringify(payload));
+      },
+      onAction: (action) => {
+        if (!isHostRef.current) return;
+        handleHostProcessGuestAction(action);
       }
-    };
+    });
 
-    return () => channel.close();
-  }, []);
+    syncServiceRef.current = sync;
+
+    if (isHost) {
+      sync.broadcastState(roomStateRef.current);
+    }
+
+    return () => {
+      sync.destroy();
+      syncServiceRef.current = null;
+    };
+  }, [inRoom, roomState?.roomId, isHost]);
 
   const broadcastRoomState = (newState) => {
     setRoomState(newState);
-    localStorage.setItem(`party_room_${newState.roomId}`, JSON.stringify(newState));
-    if (channelRef.current) {
-      channelRef.current.postMessage({
-        type: 'ROOM_UPDATE',
-        payload: newState
+    if (syncServiceRef.current) {
+      syncServiceRef.current.broadcastState(newState);
+    } else {
+      try {
+        localStorage.setItem(`party_room_${newState.roomId}`, JSON.stringify(newState));
+      } catch {}
+    }
+  };
+
+  // O Anfitrião processa ações disparadas por convidados (adicionar à fila, voto, novo participante)
+  const handleHostProcessGuestAction = (action) => {
+    const currentRoom = roomStateRef.current;
+    if (!currentRoom) return;
+
+    if (action.type === 'ADD_TO_QUEUE') {
+      const track = action.track;
+      if (!track) return;
+
+      // Se não havia nenhuma música tocando na sala, começa imediatamente!
+      if (!currentRoom.playback.videoId) {
+        if (playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
+          playerRef.current.loadVideoById(track.videoId);
+        }
+        broadcastRoomState({
+          ...currentRoom,
+          playback: {
+            videoId: track.videoId,
+            title: track.title,
+            artist: track.artist,
+            thumbnail: track.thumbnail,
+            addedBy: action.senderName || 'Convidado',
+            isPlaying: true,
+            trackPosition: 0,
+            updatedAt: Date.now()
+          }
+        });
+      } else {
+        const newQueueItem = {
+          ...track,
+          id: 'q_' + Math.random().toString(36).substring(2, 9),
+          addedBy: action.senderName || 'Convidado',
+          votes: 1
+        };
+        broadcastRoomState({
+          ...currentRoom,
+          queue: [...(currentRoom.queue || []), newQueueItem]
+        });
+      }
+    } else if (action.type === 'VOTE_TRACK') {
+      const queue = currentRoom.queue || [];
+      const updatedQueue = queue
+        .map((item) => (item.id === action.itemId ? { ...item, votes: item.votes + 1 } : item))
+        .sort((a, b) => b.votes - a.votes);
+
+      broadcastRoomState({
+        ...currentRoom,
+        queue: updatedQueue
+      });
+    } else if (action.type === 'USER_JOINED') {
+      if (!action.member || !action.member.id) return;
+      const exists = (currentRoom.members || []).some((m) => m.id === action.member.id);
+      if (!exists) {
+        broadcastRoomState({
+          ...currentRoom,
+          members: [...(currentRoom.members || []), action.member]
+        });
+      }
+    } else if (action.type === 'USER_LEFT') {
+      broadcastRoomState({
+        ...currentRoom,
+        members: (currentRoom.members || []).filter((m) => m.id !== action.userId)
       });
     }
   };
@@ -374,13 +473,17 @@ export default function App() {
 
   // 6. Inicializa ou atualiza o Player do YouTube quando há uma música ativa na sala
   useEffect(() => {
-    if (!inRoom || !roomState || !roomState.playback.videoId || (!isHost && !audioUnlocked)) return;
-
-    const currentVideoId = roomState.playback.videoId;
+    if (!inRoom || !roomState || (!isHost && !audioUnlocked)) return;
 
     const initPlayer = () => {
       if (!window.YT || !window.YT.Player) {
-        setTimeout(initPlayer, 300);
+        setTimeout(initPlayer, 200);
+        return;
+      }
+
+      const playerDiv = document.getElementById('yt-music-player');
+      if (!playerDiv) {
+        setTimeout(initPlayer, 200);
         return;
       }
 
@@ -388,7 +491,7 @@ export default function App() {
         playerRef.current = new window.YT.Player('yt-music-player', {
           height: '100%',
           width: '100%',
-          videoId: currentVideoId,
+          videoId: roomStateRef.current?.playback?.videoId || '',
           playerVars: {
             autoplay: 1,
             controls: 0,
@@ -399,17 +502,23 @@ export default function App() {
           },
           events: {
             onReady: (event) => {
-              event.target.setVolume(volume);
-              syncGuestPlayerWithRoom(event.target, roomState);
-            },
-            onStateChange: (event) => {
-              if (event.data === window.YT.PlayerState.ENDED && roomState.hostId === userId) {
-                handleSkipNext();
+              event.target.setVolume(volumeRef.current);
+              if (roomStateRef.current?.playback?.videoId) {
+                syncGuestPlayerWithRoom(event.target, roomStateRef.current);
               }
             },
-            onError: () => {
-              if (roomState.hostId === userId) {
-                handleSkipNext();
+            onStateChange: (event) => {
+              // YouTube Player State 0 = ENDED
+              if (event.data === window.YT.PlayerState.ENDED) {
+                if (isHostRef.current) {
+                  handleSkipNextRef.current();
+                }
+              }
+            },
+            onError: (err) => {
+              console.warn('YouTube Player onError:', err);
+              if (isHostRef.current) {
+                handleSkipNextRef.current();
               }
             }
           }
@@ -417,7 +526,9 @@ export default function App() {
       }
     };
 
-    initPlayer();
+    if (roomState.playback?.videoId) {
+      initPlayer();
+    }
   }, [inRoom, audioUnlocked, isHost, roomState?.playback?.videoId]);
 
   // 7. Sincronização de vídeo e Drift Correction (Regra dos 2 segundos)
@@ -428,8 +539,10 @@ export default function App() {
     if (!videoId) return;
 
     const loadedVideoUrl = player.getVideoUrl ? player.getVideoUrl() : '';
-    if (loadedVideoUrl && !loadedVideoUrl.includes(videoId)) {
-      player.loadVideoById(videoId);
+    if (!loadedVideoUrl || !loadedVideoUrl.includes(videoId)) {
+      if (typeof player.loadVideoById === 'function') {
+        player.loadVideoById(videoId);
+      }
     }
 
     const elapsedSeconds = isPlaying ? (Date.now() - updatedAt) / 1000 : 0;
@@ -437,25 +550,29 @@ export default function App() {
     const currentLocalTime = player.getCurrentTime() || 0;
 
     if (Math.abs(currentLocalTime - targetTime) > 2) {
-      player.seekTo(targetTime, true);
+      if (typeof player.seekTo === 'function') {
+        player.seekTo(targetTime, true);
+      }
     }
 
-    const playerState = player.getPlayerState();
-    if (isPlaying && playerState !== 1) {
-      player.playVideo();
-    } else if (!isPlaying && playerState !== 2) {
-      player.pauseVideo();
+    if (typeof player.getPlayerState === 'function') {
+      const playerState = player.getPlayerState();
+      if (isPlaying && playerState !== 1) {
+        player.playVideo();
+      } else if (!isPlaying && playerState !== 2) {
+        player.pauseVideo();
+      }
     }
   };
 
   useEffect(() => {
     if (!inRoom || !roomState || !playerRef.current || !roomState.playback.videoId) return;
     syncGuestPlayerWithRoom(playerRef.current, roomState);
-  }, [roomState?.playback]);
+  }, [roomState?.playback?.videoId, roomState?.playback?.isPlaying]);
 
-  // 8. Loop de alta precisão (250ms) para acompanhar a letra estilo BetterLyrics + Heartbeat do Anfitrião
+  // 8. Loop de alta precisão (250ms) para acompanhar a letra estilo BetterLyrics + Heartbeat e detecção de término
   useEffect(() => {
-    if (!inRoom || !roomState || !roomState.playback.videoId) return;
+    if (!inRoom) return;
 
     let lastHeartbeatSecond = -1;
 
@@ -467,19 +584,33 @@ export default function App() {
         setLocalProgress(curr);
         setDuration(dur);
 
+        const currentRoom = roomStateRef.current;
+        if (!currentRoom) return;
+
+        // Detecção segura de término de faixa para o Host (garante que avança mesmo se o evento do YouTube atrasar)
+        if (
+          isHostRef.current &&
+          dur > 5 &&
+          curr >= dur - 0.5 &&
+          currentRoom.playback.isPlaying
+        ) {
+          handleSkipNextRef.current();
+          return;
+        }
+
         const currentWholeSec = Math.floor(curr);
         if (
-          isHost &&
-          roomState.playback.isPlaying &&
+          isHostRef.current &&
+          currentRoom.playback.isPlaying &&
           currentWholeSec > 0 &&
           currentWholeSec % 5 === 0 &&
           currentWholeSec !== lastHeartbeatSecond
         ) {
           lastHeartbeatSecond = currentWholeSec;
           broadcastRoomState({
-            ...roomState,
+            ...currentRoom,
             playback: {
-              ...roomState.playback,
+              ...currentRoom.playback,
               trackPosition: curr,
               updatedAt: Date.now()
             }
@@ -489,7 +620,7 @@ export default function App() {
     }, 250);
 
     return () => clearInterval(interval);
-  }, [inRoom, roomState, isHost]);
+  }, [inRoom]);
 
   // Calcula qual verso da letra está ativo neste exato momento
   const activeLyricIndex = React.useMemo(() => {
@@ -552,7 +683,11 @@ export default function App() {
       queue: []
     };
 
-    broadcastRoomState(newRoom);
+    try {
+      localStorage.setItem(`party_room_${generatedRoomId}`, JSON.stringify(newRoom));
+    } catch {}
+
+    setRoomState(newRoom);
     setAudioUnlocked(true);
     setInRoom(true);
     setActiveTab('search');
@@ -560,7 +695,7 @@ export default function App() {
   };
 
   // Entrar numa Sala existente com Avatar Fofo Aleatório
-  const handleJoinRoom = (e) => {
+  const handleJoinRoom = async (e) => {
     e.preventDefault();
     if (!username.trim()) {
       setErrorMsg('Digite o seu nome para entrar na sala.');
@@ -568,45 +703,66 @@ export default function App() {
     }
 
     const cleanCode = roomCodeInput.trim().toUpperCase();
-    const savedRoomRaw = localStorage.getItem(`party_room_${cleanCode}`);
-
-    if (!savedRoomRaw) {
-      setErrorMsg('Sala não encontrada! Crie uma sala em uma aba e use o código aqui.');
+    if (!cleanCode) {
+      setErrorMsg('Digite o código da sala (ex.: PT-XXXX).');
       return;
     }
 
-    const parsedRoom = JSON.parse(savedRoomRaw);
-    if (parsedRoom.pinCode !== pinInput.trim()) {
-      setErrorMsg('Código PIN incorreto para esta sala.');
-      return;
-    }
-
-    const updatedMembers = parsedRoom.members.some((m) => m.id === userId)
-      ? parsedRoom.members
-      : [
-        ...parsedRoom.members,
-        {
-          id: userId,
-          name: username.trim(),
-          avatar: userAvatar,
-          isHost: false
-        }
-      ];
-
-    const updatedRoom = {
-      ...parsedRoom,
-      members: updatedMembers
-    };
-
-    broadcastRoomState(updatedRoom);
-    setInRoom(true);
+    setIsJoiningRoom(true);
     setErrorMsg('');
+
+    try {
+      const foundRoom = await lookupRoomState(cleanCode);
+
+      if (!foundRoom) {
+        setErrorMsg('Sala não encontrada! Verifique o código e certifique-se de que a sala está aberta.');
+        setIsJoiningRoom(false);
+        return;
+      }
+
+      if (foundRoom.pinCode && foundRoom.pinCode !== pinInput.trim()) {
+        setErrorMsg('Código PIN incorreto para esta sala.');
+        setIsJoiningRoom(false);
+        return;
+      }
+
+      const updatedMembers = (foundRoom.members || []).some((m) => m.id === userId)
+        ? foundRoom.members
+        : [
+            ...(foundRoom.members || []),
+            {
+              id: userId,
+              name: username.trim(),
+              avatar: userAvatar,
+              isHost: false
+            }
+          ];
+
+      const updatedRoom = {
+        ...foundRoom,
+        members: updatedMembers
+      };
+
+      try {
+        localStorage.setItem(`party_room_${cleanCode}`, JSON.stringify(updatedRoom));
+      } catch {}
+
+      setRoomState(updatedRoom);
+      setInRoom(true);
+      setErrorMsg('');
+      setIsJoiningRoom(false);
+    } catch (err) {
+      console.error('Erro ao conectar à sala:', err);
+      setErrorMsg('Falha ao conectar à sala. Tente novamente.');
+      setIsJoiningRoom(false);
+    }
   };
 
   // Controles do Anfitrião: Play / Pause
   const handleTogglePlay = () => {
-    if (!isHost || !playerRef.current || !roomState.playback.videoId) return;
-    const nextPlayingState = !roomState.playback.isPlaying;
+    const currentRoom = roomStateRef.current;
+    if (!isHostRef.current || !playerRef.current || !currentRoom?.playback?.videoId) return;
+    const nextPlayingState = !currentRoom.playback.isPlaying;
     const currentPos = playerRef.current.getCurrentTime() || 0;
 
     if (nextPlayingState) {
@@ -616,9 +772,9 @@ export default function App() {
     }
 
     broadcastRoomState({
-      ...roomState,
+      ...currentRoom,
       playback: {
-        ...roomState.playback,
+        ...currentRoom.playback,
         isPlaying: nextPlayingState,
         trackPosition: currentPos,
         updatedAt: Date.now()
@@ -628,12 +784,13 @@ export default function App() {
 
   // Controles do Anfitrião: Avançar para a próxima música da fila
   const handleSkipNext = () => {
-    if (!isHost || !roomState) return;
+    const currentRoom = roomStateRef.current;
+    if (!isHostRef.current || !currentRoom) return;
 
-    // Se a fila estiver vazia, apenas para a reprodução
-    if (!roomState.queue || roomState.queue.length === 0) {
+    // Se a fila estiver vazia, apenas encerra a reprodução
+    if (!currentRoom.queue || currentRoom.queue.length === 0) {
       broadcastRoomState({
-        ...roomState,
+        ...currentRoom,
         playback: {
           videoId: null,
           title: 'Fila vazia',
@@ -648,7 +805,7 @@ export default function App() {
       return;
     }
 
-    const sortedQueue = [...roomState.queue].sort((a, b) => b.votes - a.votes);
+    const sortedQueue = [...currentRoom.queue].sort((a, b) => b.votes - a.votes);
     const nextTrack = sortedQueue[0];
     const remainingQueue = sortedQueue.slice(1);
 
@@ -657,7 +814,7 @@ export default function App() {
     }
 
     broadcastRoomState({
-      ...roomState,
+      ...currentRoom,
       playback: {
         videoId: nextTrack.videoId,
         title: nextTrack.title,
@@ -671,46 +828,60 @@ export default function App() {
       queue: remainingQueue
     });
   };
+  handleSkipNextRef.current = handleSkipNext;
 
   // Adicionar música: Se não houver música tocando ainda, inicia imediatamente no Player!
   const handleAddTrack = (track) => {
-    if (!roomState) return;
+    const currentRoom = roomStateRef.current;
+    if (!currentRoom) return;
 
-    // Se a sala estiver em silêncio (primeira música adicionada), coloca para tocar na hora!
-    if (!roomState.playback.videoId) {
-      if (playerRef.current && playerRef.current.loadVideoById) {
-        playerRef.current.loadVideoById(track.videoId);
+    if (isHostRef.current) {
+      if (!currentRoom.playback.videoId) {
+        if (playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
+          playerRef.current.loadVideoById(track.videoId);
+        }
+
+        broadcastRoomState({
+          ...currentRoom,
+          playback: {
+            videoId: track.videoId,
+            title: track.title,
+            artist: track.artist,
+            thumbnail: track.thumbnail,
+            addedBy: username,
+            isPlaying: true,
+            trackPosition: 0,
+            updatedAt: Date.now()
+          }
+        });
+        setActiveTab('lyrics');
+        return;
       }
 
+      const newQueueItem = {
+        ...track,
+        id: 'q_' + Math.random().toString(36).substring(2, 9),
+        addedBy: username,
+        votes: 1
+      };
+
       broadcastRoomState({
-        ...roomState,
-        playback: {
-          videoId: track.videoId,
-          title: track.title,
-          artist: track.artist,
-          thumbnail: track.thumbnail,
-          addedBy: username,
-          isPlaying: true,
-          trackPosition: 0,
-          updatedAt: Date.now()
-        }
+        ...currentRoom,
+        queue: [...(currentRoom.queue || []), newQueueItem]
       });
-      setActiveTab('lyrics');
-      return;
+      setActiveTab('queue');
+    } else {
+      // Convidado envia a ação em tempo real para o Host via WebSocket MQTT
+      if (syncServiceRef.current) {
+        syncServiceRef.current.sendAction({
+          type: 'ADD_TO_QUEUE',
+          track,
+          senderId: userId,
+          senderName: username
+        });
+      }
+      setActiveTab('queue');
     }
-
-    const newQueueItem = {
-      ...track,
-      id: 'q_' + Math.random().toString(36).substring(2, 9),
-      addedBy: username,
-      votes: 1
-    };
-
-    broadcastRoomState({
-      ...roomState,
-      queue: [...roomState.queue, newQueueItem]
-    });
-    setActiveTab('queue');
   };
 
   // Adicionar por Link Direto do YouTube
@@ -731,26 +902,39 @@ export default function App() {
 
   // Votar numa música da fila
   const handleVoteTrack = (itemId) => {
-    const updatedQueue = roomState.queue
-      .map((item) => (item.id === itemId ? { ...item, votes: item.votes + 1 } : item))
-      .sort((a, b) => b.votes - a.votes);
+    if (isHostRef.current) {
+      const currentRoom = roomStateRef.current;
+      if (!currentRoom) return;
+      const updatedQueue = (currentRoom.queue || [])
+        .map((item) => (item.id === itemId ? { ...item, votes: item.votes + 1 } : item))
+        .sort((a, b) => b.votes - a.votes);
 
-    broadcastRoomState({
-      ...roomState,
-      queue: updatedQueue
-    });
+      broadcastRoomState({
+        ...currentRoom,
+        queue: updatedQueue
+      });
+    } else {
+      if (syncServiceRef.current) {
+        syncServiceRef.current.sendAction({
+          type: 'VOTE_TRACK',
+          itemId,
+          senderId: userId
+        });
+      }
+    }
   };
 
   // Clicar num verso da letra (se for o Anfitrião, avança a música para aquele verso igual ao BetterLyrics)
   const handleSeekToLyric = (timeInSeconds) => {
-    if (!isHost || !playerRef.current || typeof playerRef.current.seekTo !== 'function') return;
+    const currentRoom = roomStateRef.current;
+    if (!isHostRef.current || !playerRef.current || typeof playerRef.current.seekTo !== 'function' || !currentRoom) return;
     playerRef.current.seekTo(timeInSeconds, true);
     setLocalProgress(timeInSeconds);
 
     broadcastRoomState({
-      ...roomState,
+      ...currentRoom,
       playback: {
-        ...roomState.playback,
+        ...currentRoom.playback,
         trackPosition: timeInSeconds,
         updatedAt: Date.now()
       }
@@ -919,9 +1103,18 @@ export default function App() {
 
             <button
               type="submit"
-              className="w-full py-3.5 bg-gradient-to-r from-red-600 via-rose-600 to-amber-600 hover:brightness-110 text-white font-bold rounded-xl shadow-lg shadow-red-600/30 transition cursor-pointer"
+              disabled={isJoiningRoom}
+              className="w-full py-3.5 bg-gradient-to-r from-red-600 via-rose-600 to-amber-600 hover:brightness-110 disabled:opacity-60 text-white font-bold rounded-xl shadow-lg shadow-red-600/30 transition cursor-pointer flex items-center justify-center gap-2"
             >
-              {mode === 'create' ? 'Criar Party & Escolher Músicas' : 'Entrar na Party'}
+              {isJoiningRoom ? (
+                <>
+                  <Disc3 className="w-5 h-5 animate-spin" /> Conectando à Sala...
+                </>
+              ) : mode === 'create' ? (
+                'Criar Party & Escolher Músicas'
+              ) : (
+                'Entrar na Party'
+              )}
             </button>
           </form>
         </div>
@@ -986,6 +1179,14 @@ export default function App() {
 
           <button
             onClick={() => {
+              if (syncServiceRef.current) {
+                syncServiceRef.current.sendAction({
+                  type: 'USER_LEFT',
+                  userId
+                });
+                syncServiceRef.current.destroy();
+                syncServiceRef.current = null;
+              }
               setInRoom(false);
               if (playerRef.current) {
                 playerRef.current.destroy();
@@ -1022,12 +1223,11 @@ export default function App() {
               </div>
             )}
 
-            {/* Container do YouTube IFrame Player ou Estado Inicial Vazio */}
+            {/* Container do YouTube IFrame Player mantido sempre no DOM */}
             <div className="w-full aspect-video rounded-2xl overflow-hidden bg-zinc-950 mb-4 border border-zinc-800 shadow-inner flex items-center justify-center relative">
-              {roomState.playback.videoId ? (
-                <div id="yt-music-player" className="w-full h-full"></div>
-              ) : (
-                <div className="flex flex-col items-center justify-center p-6 text-zinc-500">
+              <div id="yt-music-player" className={`w-full h-full ${roomState.playback.videoId ? 'block' : 'hidden'}`}></div>
+              {!roomState.playback.videoId && (
+                <div className="flex flex-col items-center justify-center p-6 text-zinc-500 absolute inset-0">
                   <PartyTogetherLogo className="w-12 h-12 mb-3 opacity-80" iconSize="w-6 h-6" />
                   <p className="text-xs font-medium text-zinc-400">
                     Use a aba &ldquo;Buscar Música&rdquo; ao lado para escolher a primeira faixa!

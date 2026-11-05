@@ -68,7 +68,8 @@ Seja para estudar com amigos, animar uma chamada no Discord ou curtir uma festa 
 | **[YouTube IFrame API](https://developers.google.com/youtube/iframe_api_reference)** | Motor de reprodução de áudio e vídeo em alta fidelidade |
 | **[LRCLIB API](https://lrclib.net/)** | Provedor de letras de músicas sincronizadas linha a linha |
 | **[DiceBear API](https://dicebear.com/)** | Provedor de avatares vetoriais aleatórios para participantes |
-| **[BroadcastChannel API](https://developer.mozilla.org/en-US/docs/Web/API/BroadcastChannel)** | Comunicação em tempo real entre abas no mesmo navegador |
+| **[paho-mqtt](https://github.com/eclipse/paho.mqtt.javascript)** | Sincronização global em tempo real entre navegadores e dispositivos via WebSockets |
+| **[BroadcastChannel API](https://developer.mozilla.org/en-US/docs/Web/API/BroadcastChannel)** | Comunicação em tempo real de latência zero entre abas no mesmo computador |
 | **[Oxlint](https://oxc.rs/)** | Linter em Rust de alta performance para validação do código |
 
 ---
@@ -82,6 +83,8 @@ party-together-ytm/
 ├── public/                 # Favicons e ativos estáticos da aplicação
 ├── src/
 │   ├── assets/             # Recursos de mídia e imagens
+│   ├── services/
+│   │   └── realtimeSync.js # Sincronização em tempo real global (MQTT WebSockets + BroadcastChannel)
 │   ├── App.jsx             # Componente central com toda a lógica da sala, player, letras e UI
 │   ├── App.css             # Estilos auxiliares
 │   ├── index.css           # Configuração de temas e importação do Tailwind CSS v4
@@ -125,20 +128,20 @@ O terminal exibirá a URL local (normalmente `http://localhost:5173/`). Abra o e
 
 ## 👥 Como Testar a Experiência Multiusuário
 
-Para testar a sincronização entre duas ou mais pessoas no mesmo computador:
+A aplicação suporta sincronização global entre **diferentes navegadores, abas anônimas, computadores e celulares**:
 
-1. **Aba 1 (Anfitrião / Host)**:
-   - Acesse `http://localhost:5173/`.
+1. **Aparelho / Navegador 1 (Anfitrião / Host)**:
+   - Acesse o link do projeto (local ou na Vercel).
    - Escolha o modo **"Criar Sessão (Host)"**, informe seu nickname e clique em **"Criar Party"**.
    - Note o **Código da Sala** gerado (ex.: `PT-XXXX`) e o **PIN** (padrão: `1234`).
    - Use a aba **"Buscar Música"** para pesquisar uma canção e colocá-la para tocar.
 
-2. **Aba 2 (Convidado / Guest)**:
-   - Abra uma **janela anônima** ou uma **nova aba** no mesmo navegador.
+2. **Aparelho / Navegador 2 (Convidado / Guest)**:
+   - Abra outro navegador (Chrome, Edge, Firefox), aba anônima ou o celular.
    - Escolha o modo **"Entrar com Código"**.
    - Digite seu nickname, cole o código da sala e o PIN.
    - Clique em **"🔊 Sincronizar e Ouvir Agora"** para liberar o áudio e sincronizar com o anfitrião.
-   - Adicione novas músicas na fila, vote nelas e acompanhe a letra sincronizada em tempo real!
+   - Adicione novas músicas na fila, dê upvotes nas suas favoritas e acompanhe a letra sincronizada em tempo real! As músicas da fila tocam automaticamente quando a faixa atual termina.
 
 ---
 
