@@ -2348,7 +2348,7 @@ export default function App() {
 
           {/* ABA 1: BUSCA DO YOUTUBE MUSIC (INICIA VAZIA) */}
           {activeTab === 'search' && (
-            <div className="flex-1 flex flex-col">
+            <div className="flex min-h-0 flex-1 flex-col">
               <form onSubmit={handleAddCustomYoutubeUrl} className="flex gap-2 mb-4">
                 <div className="relative flex-1">
                   <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
@@ -2370,7 +2370,7 @@ export default function App() {
                 )}
               </form>
 
-              <div className="space-y-2 overflow-y-auto max-h-[420px] pr-1 flex-1">
+              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
                 {isSearching ? (
                   <div className="text-center py-14 text-zinc-400 text-sm flex flex-col items-center gap-3">
                     <Disc3 className="w-7 h-7 text-red-500 animate-spin" />
@@ -2427,7 +2427,7 @@ export default function App() {
 
           {/* ABA 2: PLAYLIST DA FESTA (MANTÉM AS FAIXAS ATÉ O FIM DA SESSÃO) */}
           {activeTab === 'queue' && (
-            <div className="flex-1 space-y-2.5 overflow-y-auto max-h-[440px] pr-1">
+            <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1">
               {playlistToDisplay.length === 0 ? (
                 <div className="text-center py-16 text-zinc-500 flex flex-col items-center">
                   <PartyTogetherLogo className="w-12 h-12 mb-3 opacity-60" iconSize="w-6 h-6" />
@@ -2502,7 +2502,7 @@ export default function App() {
           {activeTab === 'lyrics' && (
             <div
               ref={lyricsContainerRef}
-              className="flex-1 overflow-y-auto overflow-x-hidden max-h-[440px] px-4 sm:px-8 py-12 rounded-2xl bg-gradient-to-b from-zinc-950/90 via-zinc-950/60 to-zinc-950/90 border border-zinc-800/70 scroll-smooth [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 sm:px-8 py-12 rounded-2xl bg-gradient-to-b from-zinc-950/90 via-zinc-950/60 to-zinc-950/90 border border-zinc-800/70 scroll-smooth [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             >
               {!roomState.playback.videoId ? (
                 <div className="text-center py-16 text-zinc-500 flex flex-col items-center">
