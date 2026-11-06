@@ -499,6 +499,58 @@ function parseSyncedLyrics(lrcText) {
   return parsed;
 }
 
+function betterLyricsScrollEase(progress) {
+  const cubic = (time, p1, p2) => 3 * (1 - time) ** 2 * time * p1 + 3 * (1 - time) * time ** 2 * p2 + time ** 3;
+  let low = 0;
+  let high = 1;
+  let time = progress;
+  for (let i = 0; i < 8; i += 1) {
+    const x = cubic(time, 0.86, 0.2);
+    if (Math.abs(x - progress) < 0.001) break;
+    if (x < progress) low = time;
+    else high = time;
+    time = (low + high) / 2;
+  }
+  return cubic(time, 0, 1);
+}
+
+const BetterLyricsLine = React.memo(function BetterLyricsLine({ line, isCurrent, isHost, activeLineRef, seekRef }) {
+  return (
+    <p
+      ref={isCurrent ? activeLineRef : null}
+      onClick={isHost ? () => seekRef.current(line.time) : undefined}
+      aria-current={isCurrent ? 'true' : undefined}
+      data-active={isCurrent ? 'true' : 'false'}
+      className={`better-lyrics-line select-none break-words px-2 ${isHost ? 'cursor-pointer' : ''}`}
+    >
+      {line.text}
+    </p>
+  );
+}, (previous, next) =>
+  previous.line === next.line && previous.isCurrent === next.isCurrent && previous.isHost === next.isHost &&
+  previous.activeLineRef === next.activeLineRef && previous.seekRef === next.seekRef
+);
+
+const SyncedLyricsList = React.memo(function SyncedLyricsList({ lines, activeIndex, isHost, activeLineRef, seekRef }) {
+  return (
+    <div className="better-lyrics-list mx-auto w-full max-w-2xl text-center">
+      {lines.map((line, index) => (
+        <BetterLyricsLine
+          key={`${line.time}-${index}`}
+          line={line}
+          isCurrent={index === activeIndex}
+          isHost={isHost}
+          activeLineRef={activeLineRef}
+          seekRef={seekRef}
+        />
+      ))}
+    </div>
+  );
+}, (previous, next) =>
+  previous.lines === next.lines && previous.activeIndex === next.activeIndex && previous.isHost === next.isHost &&
+  previous.activeLineRef === next.activeLineRef && previous.seekRef === next.seekRef
+);
+
 export default function App() {
   // Identidade e Avatar Fofo aleatório do usuário
   const [userId] = useState(() => 'user_' + Math.random().toString(36).substring(2, 9));
@@ -576,6 +628,8 @@ export default function App() {
   const playerRef = useRef(null);
   const ytApiReady = useRef(false);
   const activeLyricRef = useRef(null);
+  const lyricScrollFrameRef = useRef(null);
+  const seekLyricRef = useRef(() => {});
   const lyricsContainerRef = useRef(null);
   const syncServiceRef = useRef(null);
 
@@ -1308,25 +1362,56 @@ export default function App() {
   // Calcula qual verso da letra está ativo neste exato momento
   const activeLyricIndex = React.useMemo(() => {
     if (!lyricsData.synced.length) return -1;
-    let idx = -1;
-    for (let i = 0; i < lyricsData.synced.length; i++) {
-      if (localProgress + 0.25 >= lyricsData.synced[i].time) {
-        idx = i;
+    const targetTime = localProgress + 0.25;
+    let low = 0;
+    let high = lyricsData.synced.length - 1;
+    let activeIndex = -1;
+    while (low <= high) {
+      const middle = (low + high) >> 1;
+      if (lyricsData.synced[middle].time <= targetTime) {
+        activeIndex = middle;
+        low = middle + 1;
       } else {
-        break;
+        high = middle - 1;
       }
     }
-    return idx;
+    return activeIndex;
   }, [lyricsData.synced, localProgress]);
 
-  // Faz auto-scroll suave estilo BetterLyrics para centralizar o verso atual
+  // Smoothly scroll only the lyrics viewport; cancel the previous movement on a new line.
   useEffect(() => {
-    if (activeTab === 'lyrics' && activeLyricRef.current && lyricsContainerRef.current) {
-      activeLyricRef.current.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center'
-      });
-    }
+    const container = lyricsContainerRef.current;
+    const activeLine = activeLyricRef.current;
+    if (lyricScrollFrameRef.current) cancelAnimationFrame(lyricScrollFrameRef.current);
+    lyricScrollFrameRef.current = null;
+    if (activeTab !== 'lyrics' || activeLyricIndex < 0 || !container || !activeLine) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const lineRect = activeLine.getBoundingClientRect();
+    const lineCenter = lineRect.top - containerRect.top + container.scrollTop + lineRect.height / 2;
+    const targetScrollTop = Math.max(0, Math.min(
+      container.scrollHeight - container.clientHeight,
+      lineCenter - container.clientHeight * 0.37
+    ));
+    const startScrollTop = container.scrollTop;
+    const scrollDistance = targetScrollTop - startScrollTop;
+    if (Math.abs(scrollDistance) < 1) return;
+
+    const duration = window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 120 : 750;
+    let startTime = null;
+    const animateScroll = (now) => {
+      if (startTime === null) startTime = now;
+      const progress = Math.min(1, (now - startTime) / duration);
+      container.scrollTop = startScrollTop + scrollDistance * betterLyricsScrollEase(progress);
+      if (progress < 1) lyricScrollFrameRef.current = requestAnimationFrame(animateScroll);
+      else lyricScrollFrameRef.current = null;
+    };
+    lyricScrollFrameRef.current = requestAnimationFrame(animateScroll);
+
+    return () => {
+      if (lyricScrollFrameRef.current) cancelAnimationFrame(lyricScrollFrameRef.current);
+      lyricScrollFrameRef.current = null;
+    };
   }, [activeLyricIndex, activeTab]);
 
   const latestChatMessageId = roomState?.chat?.length ? roomState.chat[roomState.chat.length - 1].id : null;
@@ -1811,6 +1896,7 @@ export default function App() {
       }
     });
   };
+  seekLyricRef.current = handleSeekToLyric;
 
   const handleVolumeChange = (e) => {
     const val = Number(e.target.value);
@@ -2302,7 +2388,7 @@ export default function App() {
         </div>
 
         {/* Coluna Direita: Abas (Buscar Música | Fila Colaborativa | BetterLyrics) */}
-        <div className="lg:col-span-7 flex flex-col rounded-3xl border border-zinc-800 bg-zinc-900/90 p-5 shadow-xl min-h-[520px] lg:h-full">
+        <div className="lg:col-span-7 flex h-[620px] min-h-0 flex-col overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900/90 p-5 shadow-xl">
           <div className="flex flex-wrap items-center justify-between border-b border-zinc-800 pb-3.5 mb-4 gap-2">
             <div className="flex flex-wrap gap-2">
               <button
@@ -2502,7 +2588,7 @@ export default function App() {
           {activeTab === 'lyrics' && (
             <div
               ref={lyricsContainerRef}
-              className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 sm:px-8 py-12 rounded-2xl bg-gradient-to-b from-zinc-950/90 via-zinc-950/60 to-zinc-950/90 border border-zinc-800/70 scroll-smooth [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              className="better-lyrics-scroll-area min-h-0 flex-1 overflow-y-auto overflow-x-hidden rounded-2xl border border-zinc-800/70 bg-gradient-to-b from-zinc-950/90 via-zinc-950/60 to-zinc-950/90 px-4 sm:px-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
             >
               {!roomState.playback.videoId ? (
                 <div className="text-center py-16 text-zinc-500 flex flex-col items-center">
@@ -2515,31 +2601,15 @@ export default function App() {
                   <span className="text-sm">Sincronizando letra de &ldquo;{roomState.playback.title}&rdquo;...</span>
                 </div>
               ) : lyricsData.synced.length > 0 ? (
-                <div className="space-y-8 py-20 w-full max-w-2xl mx-auto text-center transition-all duration-700">
-                  {lyricsData.synced.map((line, index) => {
-                    const isCurrent = index === activeLyricIndex;
-                    const isPast = index < activeLyricIndex;
-
-                    return (
-                      <p
-                        key={index}
-                        ref={isCurrent ? activeLyricRef : null}
-                        onClick={() => handleSeekToLyric(line.time)}
-                        className={`transition-all duration-700 ease-out select-none break-words px-2 transform ${isHost ? 'cursor-pointer' : ''
-                          } ${isCurrent
-                            ? 'text-2xl sm:text-3xl font-extrabold text-white scale-105 drop-shadow-[0_0_20px_rgba(239,68,68,0.6)] py-1'
-                            : isPast
-                              ? 'text-lg sm:text-xl font-medium text-zinc-600/70 blur-[0.3px] opacity-70'
-                              : 'text-lg sm:text-xl font-medium text-zinc-400/90 hover:text-zinc-200 opacity-90'
-                          }`}
-                      >
-                        {line.text}
-                      </p>
-                    );
-                  })}
-                </div>
+                <SyncedLyricsList
+                  lines={lyricsData.synced}
+                  activeIndex={activeLyricIndex}
+                  isHost={isHost}
+                  activeLineRef={activeLyricRef}
+                  seekRef={seekLyricRef}
+                />
               ) : lyricsData.plain ? (
-                <div className="whitespace-pre-line text-zinc-300 text-base leading-relaxed font-medium px-4 max-w-2xl mx-auto text-center break-words">
+                <div className="better-lyrics-plain mx-auto max-w-2xl whitespace-pre-line break-words px-4 text-center">
                   <div className="mb-4 text-xs text-amber-400/90 bg-amber-950/40 border border-amber-800/50 rounded-xl px-3 py-2">
                     Letra estática (esta faixa não possui marcação de tempo linha a linha):
                   </div>
