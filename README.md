@@ -27,6 +27,7 @@ Seja para estudar com amigos, animar uma chamada no Discord ou curtir uma festa 
 - **Sala com Código e PIN**: Cada sessão gera um código exclusivo (ex.: `PT-A1B2`) e um PIN de acesso de 4 dígitos para privacidade da turma.
 - **Drift Correction (Correção de Desvio)**: O player monitora a reprodução a cada 250ms; caso o participante se afaste mais de 2 segundos do tempo do Anfitrião, um salto automático (`seekTo`) ajusta a faixa sem interrupções bruscas.
 - **Heartbeat do Host**: A cada 5 segundos de reprodução, o Anfitrião emite um sinal de sincronia para manter todos alinhados.
+- **Sincronização manual**: O botão “Sincronizar player” recarrega a faixa compartilhada e salta para a posição atual da party no dispositivo local.
 - **Áudio Unlock**: Interface inteligente que orienta convidados a ativarem o som no navegador com 1 clique, contornando bloqueios nativos de autoplay de navegadores modernos.
 - **Controles Exclusivos do Host**: Apenas o anfitrião possui permissão para pausar, dar play ou pular faixas, garantindo a ordem da festa.
 
@@ -36,7 +37,9 @@ Seja para estudar com amigos, animar uma chamada no Discord ou curtir uma festa 
 - **Início Imediato ou Enfileiramento**: Se nenhuma música estiver tocando, a primeira faixa selecionada toca instantaneamente; caso contrário, vai para a fila.
 
 ### 🗳️ 3. Fila Colaborativa com Upvotes
-- **Votação Democrática**: Qualquer membro da sala pode adicionar faixas e votar nas músicas adicionadas por outros participantes.
+- **Votação Democrática**: Qualquer membro da sala pode adicionar faixas e alternar a própria curtida na fila (curtir/remover curtida).
+- **Proteção contra duplicatas e votos repetidos**: Uma faixa não pode ser adicionada novamente enquanto estiver tocando ou aguardando; cada membro pode votar uma vez por item.
+- **Remoção e histórico**: O anfitrião ou quem adicionou pode remover uma faixa da fila; faixas já tocadas podem ser colocadas novamente a partir do histórico.
 - **Reordenação Automática**: A fila é automaticamente reordenada pelas faixas com maior número de votos.
 - **Identificação de Participantes**: Cada item da fila mostra quem foi a pessoa responsável por adicionar a música.
 - **Avanço Automático**: Quando a música atual atinge o final, o player carrega automaticamente a mais votada da fila.
@@ -51,8 +54,32 @@ Seja para estudar com amigos, animar uma chamada no Discord ou curtir uma festa 
 ### 🎨 5. Interface Imersiva & Moderna
 - **Lobby com Mosaico Dinâmico**: Tela inicial inspirada no design da Netflix e Spotify, com mosaico inclinado de capas de álbuns e vinhetas gradientes.
 - **Avatares Fofos Aleatórios**: Geração automática de avatares com a API do DiceBear (`fun-emoji`, `bottts`, `thumbs`, `adventurer`).
-- **Brilho Ambiente Reativo**: Plano de fundo dinâmico que projeta as cores e a capa do álbum atual em blur suave pela tela inteira.
+- **Brilho Ambiente Reativo**: Capa do álbum atual em blur por toda a sala, com crossfade suave a cada troca de música.
 - **Controle de Volume Individual**: Cada usuário ajusta o próprio volume ou silencia o som sem afetar o restante da sala.
+
+### 💬 6. Chat e presença
+- Chat ao vivo com uma cor exclusiva por participante, emojis, GIFs do Tenor em tamanho sticker, mensagens limitadas a 300 caracteres e histórico de até 50 mensagens.
+- O seletor de GIFs usa `GET /api/tenor-gifs?q=<termo>`; links compartilhados do Tenor são resolvidos por `GET /api/tenor-gifs?url=<link>`. A rota extrai URLs `.gif` da página pública do Tenor (a API oficial não aceita novos clientes desde 2026); uma mudança no HTML do Tenor pode exigir ajuste no parser.
+- Participantes sem sinal de presença por 45 segundos são removidos; o anfitrião também pode remover participantes.
+- Convites incluem o link direto, código e PIN preenchidos. O nome e o avatar são escolhidos no lobby e ficam bloqueados durante a sessão.
+- Avatares enviados são redimensionados para 96 px e comprimidos; o arquivo original pode ter até 5 MB.
+
+### 📲 7. Web app instalável
+- Manifesto e service worker habilitam instalação e cache do app shell.
+- A reprodução em segundo plano/tela bloqueada ainda depende do navegador e das políticas do player incorporado do YouTube; a aplicação não pode garantir esse comportamento em todos os aparelhos.
+
+### Navegadores, instalação e barras laterais
+- O PWA precisa estar publicado em **HTTPS**. O manifesto fornece ícones PNG de 192×192 e 512×512, escopo, modo standalone e metadados para instalação.
+- **Chrome / ChromeOS:** menu `⋮` → “Instalar página como app”. No ChromeOS, fixe o app instalado na prateleira. Para abrir dentro do side panel do Chrome, use a extensão em `browser-extensions/chrome` (Chrome 114+).
+- **Opera desktop:** instale como app pelo menu ou carregue `browser-extensions/opera` em `opera://extensions` com o modo de desenvolvedor para criar o item da sidebar.
+- **Samsung Internet:** menu `☰` → “Adicionar página a” → “Tela inicial”. O browser não oferece API pública para websites entrarem diretamente em uma sidebar; suas extensões móveis são distribuídas como add-ons e dependem do programa de parceiros da Samsung.
+
+#### Carregar as extensões locais
+1. Baixe/clone este repositório e abra `chrome://extensions` (Chrome) ou `opera://extensions` (Opera).
+2. Ative **Modo do desenvolvedor** e selecione **Carregar sem compactação**.
+3. Escolha a pasta de extensão correspondente. Clique no ícone do Party Together e informe a URL HTTPS publicada do app; ela fica salva localmente no navegador.
+
+As extensões laterais são projetos locais para instalação/desenvolvimento. A publicação nas lojas Chrome Web Store/Opera Add-ons exige cadastro, revisão e aprovação próprios; ela não é feita por este repositório.
 
 ---
 
@@ -79,8 +106,12 @@ Seja para estudar com amigos, animar uma chamada no Discord ou curtir uma festa 
 ```text
 party-together-ytm/
 ├── api/
-│   └── search.js           # Serverless Function da busca de músicas (Vercel & Dev local)
-├── public/                 # Favicons e ativos estáticos da aplicação
+│   ├── search.js           # Serverless Function da busca de músicas (Vercel & Dev local)
+│   └── tenor-gifs.js       # Busca e resolve GIFs do Tenor em URLs diretas de mídia
+├── browser-extensions/
+│   ├── chrome/             # Extensão MV3 para Chrome / ChromeOS Side Panel
+│   └── opera/              # Extensão Opera Sidebar Action
+├── public/                 # Manifesto PWA, service worker, favicons e ícones
 ├── src/
 │   ├── assets/             # Recursos de mídia e imagens
 │   ├── services/

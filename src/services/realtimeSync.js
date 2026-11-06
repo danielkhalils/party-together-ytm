@@ -38,7 +38,7 @@ export async function lookupRoomState(roomId, timeoutMs = 5000) {
     const localRaw = localStorage.getItem(`party_room_${cleanId}`);
     if (localRaw) {
       const parsed = JSON.parse(localRaw);
-      if (parsed && parsed.roomId === cleanId) {
+      if (parsed && parsed.roomId === cleanId && !parsed.closedAt) {
         return { state: parsed, brokerIndex: null };
       }
     }
@@ -104,7 +104,7 @@ export async function lookupRoomState(roomId, timeoutMs = 5000) {
           if (finished || msg.destinationName !== stateTopic) return;
           try {
             const data = JSON.parse(msg.payloadString);
-            if (data && data.roomId === cleanId) {
+            if (data && data.roomId === cleanId && !data.closedAt) {
               finishLookup(data, index);
             }
           } catch {}
@@ -150,6 +150,16 @@ export function startRoomSync({ roomId, isHost, initialState, brokerIndex: prefe
   let broadcastChannel = null;
   let lastKnownState = initialState || null;
   const pendingActions = [];
+  const processedActionIds = new Set();
+
+  function receiveAction(action) {
+    if (!action || (action.actionId && processedActionIds.has(action.actionId))) return;
+    if (action.actionId) {
+      processedActionIds.add(action.actionId);
+      if (processedActionIds.size > 500) processedActionIds.delete(processedActionIds.values().next().value);
+    }
+    if (onAction && isHost) onAction(action);
+  }
 
   function flushStateToMqtt() {
     if (!mqttClient || !mqttClient.isConnected() || !lastKnownState) return;
@@ -189,7 +199,7 @@ export function startRoomSync({ roomId, isHost, initialState, brokerIndex: prefe
       if (type === 'ROOM_STATE' && onStateUpdate) {
         onStateUpdate(payload, 'local');
       } else if (type === 'ACTION' && onAction && isHost) {
-        onAction(payload);
+        receiveAction(payload);
       }
     };
   } catch {}
@@ -219,7 +229,7 @@ export function startRoomSync({ roomId, isHost, initialState, brokerIndex: prefe
           if (message.destinationName === stateTopic && onStateUpdate) {
             onStateUpdate(payload, 'remote');
           } else if (message.destinationName === actionsTopic && onAction && isHost) {
-            onAction(payload);
+            receiveAction(payload);
           }
         } catch (err) {
           console.error('[RealtimeSync] Erro ao processar mensagem recebida:', err);
@@ -285,18 +295,19 @@ export function startRoomSync({ roomId, isHost, initialState, brokerIndex: prefe
 
     sendAction(action) {
       if (isDestroyed) return;
+      const actionWithId = { ...action, actionId: action.actionId || `act_${Date.now()}_${Math.random().toString(36).slice(2, 10)}` };
 
       // 1. Dispara no BroadcastChannel local
       if (broadcastChannel) {
         try {
-          broadcastChannel.postMessage({ type: 'ACTION', payload: action });
+          broadcastChannel.postMessage({ type: 'ACTION', payload: actionWithId });
         } catch {}
       }
 
       // 2. Dispara no MQTT
       if (mqttClient && mqttClient.isConnected()) {
         try {
-          const msg = new paho.Message(JSON.stringify(action));
+          const msg = new paho.Message(JSON.stringify(actionWithId));
           msg.destinationName = actionsTopic;
           msg.qos = 1;
           mqttClient.send(msg);
@@ -304,7 +315,7 @@ export function startRoomSync({ roomId, isHost, initialState, brokerIndex: prefe
           console.warn('[RealtimeSync] Erro ao enviar ação via MQTT:', err);
         }
       } else {
-        pendingActions.push(action);
+        pendingActions.push(actionWithId);
       }
     },
 

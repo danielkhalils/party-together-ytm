@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { lookupRoomState, startRoomSync } from './services/realtimeSync.js';
 import {
   Play,
@@ -19,7 +20,16 @@ import {
   Disc3,
   AlertCircle,
   Mic2,
-  ListMusic
+  ListMusic,
+  Trash2,
+  MessageCircle,
+  Send,
+  RefreshCw,
+  UserX,
+  Download,
+  Bell,
+  ImagePlus,
+  X
 } from 'lucide-react';
 
 // Ícone Oficial Customizado da Aplicação "Party Together"
@@ -99,6 +109,331 @@ function getRandomCuteAvatar(seed) {
   return `https://api.dicebear.com/9.x/${style}/svg?seed=${encodeURIComponent(seed)}&backgroundColor=ffdfbf,ffd5dc,c0aede,b6e3f4,d1d4f9`;
 }
 
+const MAX_CHAT_MESSAGES = 50;
+const MAX_CHAT_CHARACTERS = 300;
+const MAX_AVATAR_FILE_BYTES = 5 * 1024 * 1024;
+const MAX_AVATAR_DATA_LENGTH = 12000;
+const PRESENCE_HEARTBEAT_MS = 15000;
+const PRESENCE_TIMEOUT_MS = 45000;
+const CHAT_REACTIONS = ['👍', '❤️', '😂', '🔥', '🎉'];
+const CHAT_COLOR_PALETTE = [
+  '#ff6b6b', '#ff9f43', '#feca57', '#1dd1a1', '#00d2d3', '#54a0ff', '#5f27cd', '#ff6bcb',
+  '#c8d96f', '#48dbfb', '#ee5253', '#a55eea', '#26de81', '#fd9644', '#2bcbba', '#778beb'
+];
+
+function getAvailableChatColor(members = []) {
+  const used = new Set(members.map((member) => member.color).filter(Boolean));
+  const available = CHAT_COLOR_PALETTE.find((color) => !used.has(color));
+  if (available) return available;
+  for (let hue = 0; hue < 360; hue += 1) {
+    const color = `hsl(${hue} 78% 66%)`;
+    if (!used.has(color)) return color;
+  }
+  return '#ffffff';
+}
+
+function getUserColor(userId = '') {
+  let hash = 0;
+  for (let i = 0; i < userId.length; i += 1) hash = (hash * 31 + userId.charCodeAt(i)) >>> 0;
+  return `hsl(${hash % 360} 78% 66%)`;
+}
+
+function ensureMemberChatColors(room) {
+  if (!room) return room;
+  const usedColors = new Set();
+  const members = (room.members || []).map((member) => {
+    const color = member.color && !usedColors.has(member.color) ? member.color : getAvailableChatColor([...usedColors].map((usedColor) => ({ color: usedColor })));
+    usedColors.add(color);
+    return member.color === color ? member : { ...member, color };
+  });
+  const colorsById = new Map(members.map((member) => [member.id, member.color]));
+  const chat = (room.chat || []).slice(-MAX_CHAT_MESSAGES).map((message) => {
+    const tenorGif = message.type === 'gif' ? normalizeTenorGifUrl(message.gifUrl || '') : null;
+    const normalized = {
+      type: message.type === 'gif' && tenorGif ? 'gif' : 'text',
+      text: String(message.text || '').slice(0, MAX_CHAT_CHARACTERS),
+      gifKind: tenorGif?.kind,
+      gifUrl: tenorGif?.url,
+      color: colorsById.get(message.senderId) || message.color || getUserColor(message.senderId)
+    };
+    return Object.keys(normalized).every((key) => message[key] === normalized[key]) ? message : { ...message, ...normalized };
+  });
+  return { ...room, members, chat };
+}
+
+const ChatMessageBubble = React.memo(function ChatMessageBubble({ message }) {
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-950/80 px-3 py-2.5">
+      <div className="mb-1 flex items-baseline justify-between gap-2">
+        <span className="truncate text-xs font-bold" style={{ color: message.color }}>
+          {message.senderName}
+        </span>
+        <time className="shrink-0 text-[10px] text-zinc-600">
+          {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+        </time>
+      </div>
+      {message.type === 'gif' ? (
+        message.gifKind === 'image' ? (
+          <img
+            src={message.gifUrl}
+            alt={`GIF enviado por ${message.senderName}`}
+            referrerPolicy="no-referrer"
+            loading="lazy"
+            decoding="async"
+            className="mt-1 h-36 w-44 max-w-full rounded-xl bg-zinc-900 object-contain"
+          />
+        ) : (
+          <a href={message.gifUrl} target="_blank" rel="noopener noreferrer" className="mt-1 inline-block text-xs text-red-300 underline">
+            Abrir GIF no Tenor
+          </a>
+        )
+      ) : (
+        <p className="break-words whitespace-pre-wrap text-sm text-zinc-200">{message.text}</p>
+      )}
+    </div>
+  );
+});
+
+function TenorGifModal({
+  query,
+  onQueryChange,
+  results,
+  isSearching,
+  error,
+  manualLink,
+  onManualLinkChange,
+  isSending,
+  onChoose,
+  onSendLink,
+  onClose
+}) {
+  useEffect(() => {
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') onClose();
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    window.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-3 backdrop-blur-sm"
+      role="presentation"
+      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+    >
+      <section className="flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-2xl border border-zinc-700 bg-zinc-900 shadow-2xl" role="dialog" aria-modal="true" aria-label="Selecionar GIF do Tenor">
+        <div className="flex items-center gap-2 border-b border-zinc-800 p-3">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-bold text-white">Selecionar GIF</h2>
+            <p className="text-[10px] text-zinc-500">GIFs do Tenor</p>
+          </div>
+          <button type="button" onClick={onClose} className="rounded-lg p-2 text-zinc-400 hover:bg-zinc-800 hover:text-white" aria-label="Fechar seletor de GIFs">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="p-3">
+          <div className="flex items-center gap-2">
+            <input
+              autoFocus
+              value={query}
+              onChange={(event) => onQueryChange(event.target.value)}
+              maxLength={80}
+              placeholder="Buscar GIFs no Tenor"
+              className="min-w-0 flex-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2.5 text-sm focus:border-red-500 focus:outline-none"
+            />
+            {isSearching && <Disc3 className="h-4 w-4 animate-spin text-red-400" />}
+          </div>
+        </div>
+        <div className="grid max-h-[48vh] grid-cols-2 gap-2 overflow-y-auto px-3 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {results.map((gif) => (
+            <button
+              key={gif.id}
+              type="button"
+              disabled={isSending}
+              onClick={() => onChoose(gif)}
+              title={gif.title}
+              className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 hover:border-red-500 disabled:opacity-50"
+            >
+              <img src={gif.previewUrl} alt={gif.title} loading="lazy" decoding="async" referrerPolicy="no-referrer" className="h-28 w-full bg-zinc-950 object-contain" />
+            </button>
+          ))}
+          {!isSearching && query.trim().length >= 2 && results.length === 0 && (
+            <p className="col-span-2 py-8 text-center text-xs text-zinc-500">Nenhum GIF encontrado.</p>
+          )}
+          {!query.trim() && <p className="col-span-2 py-8 text-center text-xs text-zinc-500">Digite para buscar e selecione um GIF.</p>}
+        </div>
+        {error && <p className="px-3 pb-2 text-xs text-red-300">{error}</p>}
+        <form onSubmit={(event) => { event.preventDefault(); onSendLink(); }} className="flex gap-2 border-t border-zinc-800 p-3">
+          <input
+            value={manualLink}
+            onChange={(event) => onManualLinkChange(event.target.value)}
+            maxLength={2000}
+            placeholder="Ou cole um link compartilhado do Tenor"
+            className="min-w-0 flex-1 rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-xs focus:border-red-500 focus:outline-none"
+          />
+          <button type="submit" disabled={!manualLink.trim() || isSending} className="rounded-lg bg-zinc-800 px-3 text-xs font-bold text-white disabled:opacity-40">
+            {isSending ? '...' : 'Enviar'}
+          </button>
+        </form>
+      </section>
+    </div>,
+    document.body
+  );
+}
+
+function AlbumBackdrop({ src }) {
+  const latestSrcRef = useRef(src);
+  const nextLayerIdRef = useRef(1);
+  const [layers, setLayers] = useState(() => src ? [{ id: 0, src, visible: true }] : []);
+
+  useEffect(() => {
+    if (src === latestSrcRef.current) return;
+    latestSrcRef.current = src;
+    if (!src) {
+      setLayers([]);
+      return;
+    }
+    const id = nextLayerIdRef.current++;
+    setLayers((previous) => [
+      ...previous.filter((layer) => layer.visible).slice(-1),
+      { id, src, visible: false }
+    ]);
+  }, [src]);
+
+  const handleImageLoaded = (id, imageSrc) => {
+    if (latestSrcRef.current !== imageSrc) {
+      setLayers((previous) => previous.filter((layer) => layer.id !== id));
+      return;
+    }
+    setLayers((previous) => previous.map((layer) => ({ ...layer, visible: layer.id === id })));
+  };
+
+  if (!layers.length) return null;
+  return (
+    <>
+      {layers.map((layer) => (
+        <img
+          key={layer.id}
+          src={layer.src}
+          alt=""
+          aria-hidden="true"
+          fetchPriority="low"
+          decoding="async"
+          onLoad={() => handleImageLoaded(layer.id, layer.src)}
+          onError={() => setLayers((previous) => previous.filter((item) => item.id !== layer.id))}
+          onTransitionEnd={(event) => {
+            if (event.propertyName === 'opacity' && !layer.visible) {
+              setLayers((previous) => previous.filter((item) => item.id !== layer.id));
+            }
+          }}
+          className={`pointer-events-none fixed inset-0 z-0 h-full w-full scale-110 object-cover blur-[48px] transition-opacity duration-1000 ease-in-out ${layer.visible ? 'opacity-35' : 'opacity-0'}`}
+        />
+      ))}
+      <div className="pointer-events-none fixed inset-0 z-0 bg-zinc-950/45" />
+    </>
+  );
+}
+
+function normalizeTenorGifUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl.trim());
+    if (url.protocol !== 'https:') return null;
+    if (['media.tenor.com', 'media1.tenor.com', 'media.tenor.co', 'media1.tenor.co'].includes(url.hostname) && /\.gif$/i.test(url.pathname)) {
+      return { kind: 'image', url: url.href };
+    }
+    if (url.hostname === 'tenor.com' || url.hostname === 'www.tenor.com') {
+      if (/^\/[\w-]+\.gif$/i.test(url.pathname) || /^\/embed\/\d+\/?$/i.test(url.pathname) || /^\/view\/.+-(\d+)\/?$/i.test(url.pathname)) {
+        return { kind: 'resolve', url: url.href };
+      }
+    }
+  } catch {}
+  return null;
+}
+
+function compressAvatarImage(file) {
+  return new Promise((resolve, reject) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      try {
+        const maxSide = 96;
+        const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+        const context = canvas.getContext('2d');
+        if (!context) return reject(new Error('Não foi possível processar a imagem.'));
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        let result = canvas.toDataURL('image/webp', 0.62);
+        if (result.length > MAX_AVATAR_DATA_LENGTH) result = canvas.toDataURL('image/jpeg', 0.55);
+        if (result.length > MAX_AVATAR_DATA_LENGTH) {
+          const downScale = 72 / Math.max(canvas.width, canvas.height);
+          canvas.width = Math.max(1, Math.round(canvas.width * downScale));
+          canvas.height = Math.max(1, Math.round(canvas.height * downScale));
+          context.drawImage(image, 0, 0, canvas.width, canvas.height);
+          result = canvas.toDataURL('image/jpeg', 0.45);
+        }
+        if (result.length > MAX_AVATAR_DATA_LENGTH) return reject(new Error('A imagem ainda ficou grande após a compressão.'));
+        resolve(result);
+      } catch {
+        reject(new Error('Não foi possível processar esta imagem.'));
+      }
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Não foi possível abrir este arquivo de imagem.'));
+    };
+    image.src = objectUrl;
+  });
+}
+
+function NewsPanel({ onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Novidades da aplicação">
+      <div className="w-full max-w-md rounded-2xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-lg font-bold"><Bell className="h-5 w-5 text-amber-400" /> Novidades</h2>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white" aria-label="Fechar novidades"><X className="h-5 w-5" /></button>
+        </div>
+        <ul className="space-y-3 text-sm text-zinc-300">
+          <li>• Fila sem duplicatas, com remoção controlada e votos únicos.</li>
+          <li>• Chat com emojis, GIFs do Tenor e histórico limitado a 50 mensagens.</li>
+          <li>• Avatares personalizados, incluindo imagem do seu dispositivo.</li>
+          <li>• Correções de sincronização e instalação como webapp.</li>
+          <li>• Áudio com a tela bloqueada depende do suporte do navegador ao player incorporado do YouTube.</li>
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function InstallHelpPanel({ onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Como instalar o Party Together">
+      <div className="w-full max-w-lg rounded-2xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="flex items-center gap-2 text-lg font-bold"><Download className="h-5 w-5 text-red-400" /> Instalar / adicionar</h2>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white" aria-label="Fechar instruções"><X className="h-5 w-5" /></button>
+        </div>
+        <div className="max-h-[65vh] space-y-4 overflow-y-auto text-sm text-zinc-300">
+          <p>O app requer uma URL pública HTTPS para ser instalado. Se o navegador oferecer o botão de instalação, ele será aberto automaticamente.</p>
+          <div><strong className="text-white">Chrome / ChromeOS:</strong> menu ⋮ → “Instalar página como app”. No ChromeOS, o app instalado aparece no launcher e pode ser fixado na prateleira. Para a barra lateral, carregue a extensão da pasta <code>browser-extensions/chrome</code>.</div>
+          <div><strong className="text-white">Opera:</strong> use o menu para instalar a página como app. Para a sidebar do Opera, carregue a extensão da pasta <code>browser-extensions/opera</code>.</div>
+          <div><strong className="text-white">Samsung Internet:</strong> menu ☰ → “Adicionar página a” → “Tela inicial”. O Samsung Internet não expõe uma API pública de sidebar para sites; extensões móveis dependem do programa de parceiros/Galaxy Store.</div>
+          <p className="text-xs text-zinc-500">As extensões Chrome/Opera pedem o endereço HTTPS do app na primeira abertura e o guardam localmente neste navegador.</p>
+        </div>
+        <button onClick={onClose} className="mt-4 w-full rounded-xl bg-zinc-800 py-2.5 text-sm font-bold hover:bg-zinc-700">Entendi</button>
+      </div>
+    </div>
+  );
+}
+
 // Utilitário para extrair ID do YouTube se o usuário colar um link direto
 function extractYouTubeId(input) {
   const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
@@ -167,15 +502,15 @@ function parseSyncedLyrics(lrcText) {
 export default function App() {
   // Identidade e Avatar Fofo aleatório do usuário
   const [userId] = useState(() => 'user_' + Math.random().toString(36).substring(2, 9));
-  const [userAvatar] = useState(() => getRandomCuteAvatar('party_' + Math.random().toString(36).substring(2, 8)));
+  const [userAvatar, setUserAvatar] = useState(() => getRandomCuteAvatar('party_' + Math.random().toString(36).substring(2, 8)));
   const [username, setUsername] = useState('');
   const [inRoom, setInRoom] = useState(false);
 
   // Dados de criação / entrada na sala
-  const [mode, setMode] = useState('create'); // 'create' | 'join'
+  const [mode, setMode] = useState(() => new URLSearchParams(window.location.search).has('room') ? 'join' : 'create'); // 'create' | 'join'
   const [roomNameInput, setRoomNameInput] = useState('Sexta Indie & Pop');
-  const [roomCodeInput, setRoomCodeInput] = useState('');
-  const [pinInput, setPinInput] = useState('1234');
+  const [roomCodeInput, setRoomCodeInput] = useState(() => new URLSearchParams(window.location.search).get('room') || '');
+  const [pinInput, setPinInput] = useState(() => new URLSearchParams(window.location.search).get('pin') || '1234');
   const [errorMsg, setErrorMsg] = useState('');
   const [copied, setCopied] = useState(false);
   const [isJoiningRoom, setIsJoiningRoom] = useState(false);
@@ -192,14 +527,43 @@ export default function App() {
   const [isMuted, setIsMuted] = useState(false);
   const [localProgress, setLocalProgress] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [isResyncingPlayer, setIsResyncingPlayer] = useState(false);
 
   // Estados da Busca (Inicia VAZIA a critério do usuário)
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
 
-  // Abas: 'queue' | 'search' | 'lyrics'
+  // Abas: 'queue' | 'search' | 'lyrics' | 'chat'
   const [activeTab, setActiveTab] = useState('search');
+  const [chatInput, setChatInput] = useState('');
+  const [gifInput, setGifInput] = useState('');
+  const [gifSearchQuery, setGifSearchQuery] = useState('');
+  const [gifResults, setGifResults] = useState([]);
+  const [isSearchingGifs, setIsSearchingGifs] = useState(false);
+  const [isSendingGif, setIsSendingGif] = useState(false);
+  const [chatError, setChatError] = useState('');
+  const [showGifInput, setShowGifInput] = useState(false);
+  const [showNews, setShowNews] = useState(false);
+  const [showInstallHelp, setShowInstallHelp] = useState(false);
+  const closeTenorGifModal = useCallback(() => setShowGifInput(false), []);
+  const chatEndRef = useRef(null);
+  const avatarInputRef = useRef(null);
+  const [installPrompt, setInstallPrompt] = useState(null);
+
+  const handleInstallApp = async () => {
+    if (!installPrompt) {
+      setShowInstallHelp(true);
+      return;
+    }
+    try {
+      await installPrompt.prompt();
+    } catch {
+      setShowInstallHelp(true);
+    } finally {
+      setInstallPrompt(null);
+    }
+  };
 
   // Estados do BetterLyrics (Letras Sincronizadas em Tempo Real)
   const [lyricsData, setLyricsData] = useState({
@@ -228,6 +592,10 @@ export default function App() {
   volumeRef.current = volume;
 
   const handleSkipNextRef = useRef(() => {});
+  const lastAdvancedTrackRef = useRef(null);
+  const lastGuestSyncAtRef = useRef(0);
+  const lastPlayerUiUpdateRef = useRef(0);
+  const manualSyncPendingRef = useRef(false);
 
   // 1. Atualiza o Favicon do navegador com o novo ícone da aplicação
   useEffect(() => {
@@ -240,6 +608,16 @@ export default function App() {
     }
     link.href = `data:image/svg+xml,${encodeURIComponent(svgIcon)}`;
     document.title = 'Party Together — YouTube Music Sync';
+  }, []);
+
+  useEffect(() => {
+    const onInstallAvailable = (event) => {
+      event.preventDefault();
+      setInstallPrompt(event);
+    };
+    window.addEventListener('beforeinstallprompt', onInstallAvailable);
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+    return () => window.removeEventListener('beforeinstallprompt', onInstallAvailable);
   }, []);
 
   // 2. Carrega a API oficial de IFrame do YouTube
@@ -268,7 +646,20 @@ export default function App() {
       isHost,
       brokerIndex: roomBrokerIndex,
       onStateUpdate: (remoteState) => {
-        const nextRoom = ensureRoomPlaylist(remoteState);
+        const nextRoom = ensureMemberChatColors(ensureRoomPlaylist(remoteState));
+        if (
+          !isHostRef.current && joinedRoomConfirmedRef.current &&
+          !(nextRoom.members || []).some((member) => member.id === userId)
+        ) {
+          setInRoom(false);
+          setErrorMsg('Você foi removido desta party pelo anfitrião.');
+          joinedRoomConfirmedRef.current = false;
+          if (playerRef.current) {
+            playerRef.current.destroy();
+            playerRef.current = null;
+          }
+          return;
+        }
         if (!isHostRef.current && (nextRoom.members || []).some((member) => member.id === userId)) {
           joinedRoomConfirmedRef.current = true;
         }
@@ -287,7 +678,16 @@ export default function App() {
             return prev;
           }
           roomRevisionRef.current = Math.max(roomRevisionRef.current, remoteVersion);
-          return nextRoom;
+          const previousMessages = new Map((prev.chat || []).map((message) => [message.id, message]));
+          const mergedChat = (nextRoom.chat || []).map((message) => {
+            const previous = previousMessages.get(message.id);
+            if (!previous) return message;
+            const sameMessage = ['senderId', 'senderName', 'type', 'text', 'gifKind', 'gifUrl', 'color', 'createdAt']
+              .every((key) => previous[key] === message[key]);
+            return sameMessage ? previous : message;
+          });
+          const chatUnchanged = mergedChat.length === (prev.chat || []).length && mergedChat.every((message, index) => message === prev.chat[index]);
+          return chatUnchanged ? { ...nextRoom, chat: prev.chat || [] } : { ...nextRoom, chat: mergedChat };
         });
       },
       onAction: (action) => {
@@ -309,7 +709,8 @@ export default function App() {
             id: userId,
             name: username.trim(),
             avatar: userAvatar,
-            isHost: false
+            isHost: false,
+            lastSeen: Date.now()
           }
         });
       joinedRoomConfirmedRef.current = false;
@@ -326,6 +727,52 @@ export default function App() {
     };
   }, [inRoom, roomState?.roomId, isHost, roomBrokerIndex, userId, username, userAvatar]);
 
+  // Batimento de presença dos convidados; o anfitrião elimina membros que perderam conexão.
+  useEffect(() => {
+    if (!inRoom || !roomState?.roomId || isHost) return;
+    const presenceTimer = setInterval(() => {
+      syncServiceRef.current?.sendAction({ type: 'USER_HEARTBEAT', userId });
+    }, PRESENCE_HEARTBEAT_MS);
+    const leaveRoom = () => syncServiceRef.current?.sendAction({ type: 'USER_LEFT', userId });
+    window.addEventListener('pagehide', leaveRoom);
+    return () => {
+      clearInterval(presenceTimer);
+      window.removeEventListener('pagehide', leaveRoom);
+    };
+  }, [inRoom, roomState?.roomId, isHost, userId]);
+
+  useEffect(() => {
+    if (!inRoom || !isHost) return;
+    const presenceSweep = setInterval(() => {
+      const current = roomStateRef.current;
+      if (!current) return;
+      const cutoff = Date.now() - PRESENCE_TIMEOUT_MS;
+      const nextMembers = (current.members || []).filter((member) =>
+        member.id === current.hostId || (member.lastSeen || member.joinedAt || 0) >= cutoff
+      );
+      if (nextMembers.length !== (current.members || []).length) broadcastRoomState({ ...current, members: nextMembers });
+    }, 10000);
+    const closeSessionOnPageExit = (event) => {
+      if (event.persisted) return;
+      const current = roomStateRef.current;
+      if (!current) return;
+      const closedState = {
+        ...current,
+        chat: [],
+        members: [],
+        closedAt: Date.now(),
+        stateVersion: Math.max(roomRevisionRef.current, Number(current.stateVersion) || 0) + 1
+      };
+      syncServiceRef.current?.broadcastState(closedState);
+      try { localStorage.setItem(`party_room_${current.roomId}`, JSON.stringify(closedState)); } catch {}
+    };
+    window.addEventListener('pagehide', closeSessionOnPageExit);
+    return () => {
+      clearInterval(presenceSweep);
+      window.removeEventListener('pagehide', closeSessionOnPageExit);
+    };
+  }, [inRoom, isHost]);
+
   const broadcastRoomState = (newState) => {
     const nextVersion = Math.max(
       roomRevisionRef.current,
@@ -334,6 +781,7 @@ export default function App() {
     ) + 1;
     roomRevisionRef.current = nextVersion;
     const stateWithVersion = ensureRoomPlaylist({ ...newState, stateVersion: nextVersion });
+    roomStateRef.current = stateWithVersion;
     setRoomState(stateWithVersion);
     if (syncServiceRef.current) {
       syncServiceRef.current.broadcastState(stateWithVersion);
@@ -352,10 +800,14 @@ export default function App() {
     if (action.type === 'ADD_TO_QUEUE') {
       const track = action.track;
       if (!track) return;
+      const alreadyActive = currentRoom.playback?.videoId === track.videoId || (currentRoom.playlist || []).some((item) =>
+        item.videoId === track.videoId && ['queued', 'playing'].includes(item.status)
+      );
+      if (alreadyActive) return;
 
       // Se não havia nenhuma música tocando na sala, começa imediatamente!
       if (!currentRoom.playback.videoId) {
-        const playlistItem = createPlaylistItem(track, action.senderName || 'Convidado', 'playing');
+        const playlistItem = { ...createPlaylistItem(track, action.senderName || 'Convidado', 'playing'), addedById: action.senderId };
         if (playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
           playerRef.current.loadVideoById(track.videoId);
         }
@@ -375,7 +827,7 @@ export default function App() {
           }
         });
       } else {
-        const newQueueItem = createPlaylistItem(track, action.senderName || 'Convidado');
+        const newQueueItem = { ...createPlaylistItem(track, action.senderName || 'Convidado'), addedById: action.senderId, voters: action.senderId ? [action.senderId] : [] };
         broadcastRoomState({
           ...currentRoom,
           queue: [...(currentRoom.queue || []), newQueueItem],
@@ -384,9 +836,18 @@ export default function App() {
       }
     } else if (action.type === 'VOTE_TRACK') {
       const queue = currentRoom.queue || [];
+      const target = queue.find((item) => item.id === action.itemId);
+      if (!target || !action.senderId) return;
+      const hasVoted = (target.voters || []).includes(action.senderId);
       const updatedQueue = queue
-        .map((item) => (item.id === action.itemId ? { ...item, votes: item.votes + 1 } : item))
-        .sort((a, b) => b.votes - a.votes);
+        .map((item) => {
+          if (item.id !== action.itemId) return item;
+          const voters = item.voters || [];
+          return hasVoted
+            ? { ...item, votes: Math.max(0, (item.votes || 0) - 1), voters: voters.filter((id) => id !== action.senderId) }
+            : { ...item, votes: (item.votes || 0) + 1, voters: [...voters, action.senderId] };
+        })
+        .sort((a, b) => (b.votes || 0) - (a.votes || 0));
 
       broadcastRoomState({
         ...currentRoom,
@@ -395,9 +856,22 @@ export default function App() {
     } else if (action.type === 'USER_JOINED') {
       if (!action.member || !action.member.id) return;
       const members = currentRoom.members || [];
-      const member = { ...action.member, isHost: false };
-      const memberIndex = members.findIndex((m) => m.id === member.id);
-      if (memberIndex >= 0 && members[memberIndex].name === member.name && members[memberIndex].avatar === member.avatar) return;
+      const memberIndex = members.findIndex((m) => m.id === action.member.id);
+      const previousMember = members[memberIndex];
+      const member = {
+        ...action.member,
+        isHost: false,
+        lastSeen: Date.now(),
+        avatar: String(action.member.avatar || '').startsWith('data:image/') && action.member.avatar.length > MAX_AVATAR_DATA_LENGTH
+          ? getRandomCuteAvatar(action.member.name || action.member.id)
+          : action.member.avatar,
+        color: previousMember?.color || getAvailableChatColor(members)
+      };
+      if (
+        memberIndex >= 0 && members[memberIndex].name === member.name &&
+        members[memberIndex].avatar === member.avatar && members[memberIndex].color &&
+        Date.now() - (members[memberIndex].lastSeen || 0) < 10000
+      ) return;
       const updatedMembers = memberIndex >= 0
         ? members.map((existing, index) => index === memberIndex ? { ...existing, ...member } : existing)
         : [...members, member];
@@ -410,6 +884,46 @@ export default function App() {
         ...currentRoom,
         members: updatedMembers
       });
+    } else if (action.type === 'USER_HEARTBEAT') {
+      const members = currentRoom.members || [];
+      if (!members.some((member) => member.id === action.userId)) return;
+      broadcastRoomState({
+        ...currentRoom,
+        members: members.map((member) => member.id === action.userId ? { ...member, lastSeen: Date.now() } : member)
+      });
+    } else if (action.type === 'REMOVE_TRACK') {
+      const item = (currentRoom.queue || []).find((track) => track.id === action.itemId);
+      if (!item || (action.senderId !== currentRoom.hostId && item.addedById !== action.senderId)) return;
+      broadcastRoomState({
+        ...currentRoom,
+        queue: (currentRoom.queue || []).filter((track) => track.id !== action.itemId),
+        playlist: (currentRoom.playlist || []).filter((track) => track.id !== action.itemId)
+      });
+    } else if (action.type === 'KICK_MEMBER') {
+      if (action.senderId !== currentRoom.hostId || action.userId === currentRoom.hostId) return;
+      const members = currentRoom.members || [];
+      const nextMembers = members.filter((member) => member.id !== action.userId);
+      if (nextMembers.length !== members.length) broadcastRoomState({ ...currentRoom, members: nextMembers });
+    } else if (action.type === 'CHAT_MESSAGE') {
+      const message = action.message;
+      if (!message?.senderId) return;
+      const isGif = message.type === 'gif';
+      const tenorGif = isGif ? normalizeTenorGifUrl(message.gifUrl || '') : null;
+      const text = String(message.text || '').trim().slice(0, MAX_CHAT_CHARACTERS);
+      if ((isGif && tenorGif?.kind !== 'image') || (!isGif && !text)) return;
+      const sender = (currentRoom.members || []).find((member) => member.id === message.senderId);
+      const messages = [...(currentRoom.chat || []), {
+        id: message.id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        senderId: message.senderId,
+        senderName: String(message.senderName || 'Convidado').slice(0, 32),
+        type: isGif ? 'gif' : 'text',
+        text,
+        gifKind: tenorGif?.kind,
+        gifUrl: tenorGif?.url,
+        color: sender?.color || getUserColor(message.senderId),
+        createdAt: Date.now()
+      }].slice(-MAX_CHAT_MESSAGES);
+      broadcastRoomState({ ...currentRoom, chat: messages });
     }
   };
 
@@ -440,6 +954,36 @@ export default function App() {
 
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  useEffect(() => {
+    const query = gifSearchQuery.trim();
+    if (!showGifInput || query.length < 2) {
+      setGifResults([]);
+      setIsSearchingGifs(false);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setIsSearchingGifs(true);
+      try {
+        const response = await fetch(`/api/tenor-gifs?q=${encodeURIComponent(query)}`, { signal: controller.signal });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Falha ao buscar GIFs.');
+        setGifResults(Array.isArray(data.results) ? data.results : []);
+      } catch (error) {
+        if (error.name !== 'AbortError') {
+          setGifResults([]);
+          setChatError(error.message || 'Não foi possível buscar GIFs agora.');
+        }
+      } finally {
+        if (!controller.signal.aborted) setIsSearchingGifs(false);
+      }
+    }, 350);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [gifSearchQuery, showGifInput]);
 
   // 5. Busca automática da Letra Sincronizada (BetterLyrics style via LRCLIB) sempre que a música muda
   useEffect(() => {
@@ -573,6 +1117,7 @@ export default function App() {
             autoplay: 1,
             controls: 0,
             disablekb: 1,
+            playsinline: 1,
             modestbranding: 1,
             rel: 0,
             origin: window.location.origin
@@ -581,6 +1126,7 @@ export default function App() {
             onReady: (event) => {
               event.target.setVolume(volumeRef.current);
               if (roomStateRef.current?.playback?.videoId) {
+                manualSyncPendingRef.current = false;
                 syncGuestPlayerWithRoom(event.target, roomStateRef.current);
               }
             },
@@ -593,16 +1139,15 @@ export default function App() {
                 return;
               }
 
-              // Convidados não controlam play/pause. Se o player local for pausado
-              // enquanto a sala continua tocando, retoma sem alterar o estado da sala.
-              if (event.data === window.YT.PlayerState.PAUSED && !isHostRef.current) {
+              // Recupera pausa local do iframe sem mudar o estado compartilhado da party.
+              if (event.data === window.YT.PlayerState.PAUSED) {
                 const sharedPlayback = roomStateRef.current?.playback;
                 if (sharedPlayback?.isPlaying) {
                   setTimeout(() => {
-                    if (!isHostRef.current && roomStateRef.current?.playback?.isPlaying) {
+                    if (roomStateRef.current?.playback?.isPlaying && playerRef.current?.getPlayerState?.() === window.YT.PlayerState.PAUSED) {
                       playerRef.current?.playVideo();
                     }
-                  }, 0);
+                  }, 250);
                 }
               }
             },
@@ -657,26 +1202,73 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (!inRoom) return;
+    const recoverPlayback = () => {
+      if (document.visibilityState === 'hidden') return;
+      const currentRoom = roomStateRef.current;
+      const player = playerRef.current;
+      if (!currentRoom?.playback?.isPlaying || !player) return;
+      syncGuestPlayerWithRoom(player, currentRoom);
+    };
+    document.addEventListener('visibilitychange', recoverPlayback);
+    window.addEventListener('pageshow', recoverPlayback);
+    window.addEventListener('focus', recoverPlayback);
+    return () => {
+      document.removeEventListener('visibilitychange', recoverPlayback);
+      window.removeEventListener('pageshow', recoverPlayback);
+      window.removeEventListener('focus', recoverPlayback);
+    };
+  }, [inRoom]);
+
+  useEffect(() => {
     if (!inRoom || !roomState || !playerRef.current || !roomState.playback.videoId) return;
     syncGuestPlayerWithRoom(playerRef.current, roomState);
   }, [roomState?.playback?.videoId, roomState?.playback?.isPlaying]);
+
+  useEffect(() => {
+    const mediaSession = navigator.mediaSession;
+    if (!mediaSession || !roomState?.playback?.videoId) return;
+    if ('MediaMetadata' in window) {
+      mediaSession.metadata = new window.MediaMetadata({
+        title: roomState.playback.title || 'Party Together',
+        artist: roomState.playback.artist || roomState.roomName,
+        artwork: roomState.playback.thumbnail ? [{ src: roomState.playback.thumbnail, sizes: '512x512', type: 'image/jpeg' }] : []
+      });
+    }
+    try { mediaSession.playbackState = roomState.playback.isPlaying ? 'playing' : 'paused'; } catch {}
+    try { mediaSession.setActionHandler('play', () => { if (isHostRef.current) handleTogglePlay(); }); } catch {}
+    try { mediaSession.setActionHandler('pause', () => { if (isHostRef.current && roomStateRef.current?.playback?.isPlaying) handleTogglePlay(); }); } catch {}
+    try { mediaSession.setActionHandler('nexttrack', () => { if (isHostRef.current) handleSkipNextRef.current(); }); } catch {}
+    return () => {
+      for (const action of ['play', 'pause', 'nexttrack']) {
+        try { mediaSession.setActionHandler(action, null); } catch {}
+      }
+    };
+  }, [roomState?.playback?.videoId, roomState?.playback?.title, roomState?.playback?.artist, roomState?.playback?.thumbnail, roomState?.playback?.isPlaying]);
 
   // 8. Loop de alta precisão (250ms) para acompanhar a letra estilo BetterLyrics + Heartbeat e detecção de término
   useEffect(() => {
     if (!inRoom) return;
 
     let lastHeartbeatSecond = -1;
-
     const interval = setInterval(() => {
       const player = playerRef.current;
       if (player && typeof player.getCurrentTime === 'function') {
         const curr = player.getCurrentTime() || 0;
         const dur = player.getDuration() || 0;
-        setLocalProgress(curr);
-        setDuration(dur);
+        if (Date.now() - lastPlayerUiUpdateRef.current >= 500) {
+          lastPlayerUiUpdateRef.current = Date.now();
+          setLocalProgress(curr);
+          setDuration(dur);
+        }
 
         const currentRoom = roomStateRef.current;
         if (!currentRoom) return;
+
+        if (currentRoom.playback?.videoId && Date.now() - lastGuestSyncAtRef.current >= 5000) {
+          lastGuestSyncAtRef.current = Date.now();
+          syncGuestPlayerWithRoom(player, currentRoom);
+        }
 
         // Detecção segura de término de faixa para o Host (garante que avança mesmo se o evento do YouTube atrasar)
         if (
@@ -737,6 +1329,11 @@ export default function App() {
     }
   }, [activeLyricIndex, activeTab]);
 
+  const latestChatMessageId = roomState?.chat?.length ? roomState.chat[roomState.chat.length - 1].id : null;
+  useEffect(() => {
+    if (activeTab === 'chat') chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [latestChatMessageId, activeTab]);
+
   // Criar Sala como Anfitrião (Inicia com fila e player vazios para o usuário buscar)
   const handleCreateRoom = (e) => {
     e.preventDefault();
@@ -758,7 +1355,10 @@ export default function App() {
           id: userId,
           name: username.trim(),
           avatar: userAvatar,
-          isHost: true
+          isHost: true,
+          color: getAvailableChatColor([]),
+          joinedAt: Date.now(),
+          lastSeen: Date.now()
         }
       ],
       playback: {
@@ -773,6 +1373,7 @@ export default function App() {
       },
       queue: [],
       playlist: [],
+      chat: [],
       stateVersion: 0
     };
 
@@ -832,14 +1433,17 @@ export default function App() {
               id: userId,
               name: username.trim(),
               avatar: userAvatar,
-              isHost: false
+              isHost: false,
+              color: getAvailableChatColor(foundRoom.members || []),
+              joinedAt: Date.now(),
+              lastSeen: Date.now()
             }
           ];
 
-      const updatedRoom = ensureRoomPlaylist({
+      const updatedRoom = ensureMemberChatColors(ensureRoomPlaylist({
         ...foundRoom,
         members: updatedMembers
-      });
+      }));
       roomRevisionRef.current = Number(updatedRoom.stateVersion) || 0;
       joinedRoomConfirmedRef.current = false;
       setRoomBrokerIndex(lookupResult.brokerIndex);
@@ -883,10 +1487,50 @@ export default function App() {
     });
   };
 
+  const handleResyncPlayer = () => {
+    const currentRoom = roomStateRef.current;
+    const playback = currentRoom?.playback;
+    if (!playback?.videoId || isResyncingPlayer) return;
+
+    const targetPosition = Math.max(
+      0,
+      (Number(playback.trackPosition) || 0) + (playback.isPlaying ? Math.max(0, Date.now() - (playback.updatedAt || Date.now())) / 1000 : 0)
+    );
+    const player = playerRef.current;
+    setIsResyncingPlayer(true);
+
+    try {
+      if (player?.loadVideoById && player?.cueVideoById) {
+        const loadMethod = playback.isPlaying ? player.loadVideoById : player.cueVideoById;
+        loadMethod.call(player, { videoId: playback.videoId, startSeconds: targetPosition });
+        if (playback.isPlaying) player.playVideo?.();
+        setLocalProgress(targetPosition);
+      } else {
+        manualSyncPendingRef.current = true;
+        if (!isHostRef.current) setAudioUnlocked(true);
+      }
+    } catch (error) {
+      console.warn('Falha ao sincronizar o player local:', error);
+      manualSyncPendingRef.current = true;
+      if (!isHostRef.current) setAudioUnlocked(true);
+    }
+
+    window.setTimeout(() => {
+      setIsResyncingPlayer(false);
+      if (manualSyncPendingRef.current && playerRef.current && roomStateRef.current?.playback?.videoId) {
+        manualSyncPendingRef.current = false;
+        syncGuestPlayerWithRoom(playerRef.current, roomStateRef.current);
+      }
+    }, 1200);
+  };
+
   // Controles do Anfitrião: Avançar para a próxima música da fila
   const handleSkipNext = () => {
     const currentRoom = ensureRoomPlaylist(roomStateRef.current);
     if (!isHostRef.current || !currentRoom) return;
+    const finishedTrackId = currentRoom.playback?.playlistItemId || currentRoom.playback?.videoId;
+    if (finishedTrackId && lastAdvancedTrackRef.current === finishedTrackId) return;
+    if (finishedTrackId) lastAdvancedTrackRef.current = finishedTrackId;
 
     // Se a fila estiver vazia, apenas encerra a reprodução
     if (!currentRoom.queue || currentRoom.queue.length === 0) {
@@ -946,9 +1590,14 @@ export default function App() {
     const currentRoom = roomStateRef.current;
     if (!currentRoom) return;
 
+    const alreadyQueuedOrPlaying = currentRoom.playback?.videoId === track.videoId || (currentRoom.playlist || []).some((item) =>
+      item.videoId === track.videoId && ['queued', 'playing'].includes(item.status)
+    );
+    if (alreadyQueuedOrPlaying) return;
+
     if (isHostRef.current) {
       if (!currentRoom.playback.videoId) {
-        const playlistItem = createPlaylistItem(track, username, 'playing');
+        const playlistItem = { ...createPlaylistItem(track, username, 'playing'), addedById: userId, voters: [] };
         if (playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
           playerRef.current.loadVideoById(track.videoId);
         }
@@ -972,7 +1621,7 @@ export default function App() {
         return;
       }
 
-      const newQueueItem = createPlaylistItem(track, username);
+      const newQueueItem = { ...createPlaylistItem(track, username), addedById: userId, voters: [userId] };
 
       broadcastRoomState({
         ...currentRoom,
@@ -1015,9 +1664,18 @@ export default function App() {
     if (isHostRef.current) {
       const currentRoom = roomStateRef.current;
       if (!currentRoom) return;
+      const target = (currentRoom.queue || []).find((item) => item.id === itemId);
+      if (!target) return;
+      const hasVoted = (target.voters || []).includes(userId);
       const updatedQueue = (currentRoom.queue || [])
-        .map((item) => (item.id === itemId ? { ...item, votes: item.votes + 1 } : item))
-        .sort((a, b) => b.votes - a.votes);
+        .map((item) => {
+          if (item.id !== itemId) return item;
+          const voters = item.voters || [];
+          return hasVoted
+            ? { ...item, votes: Math.max(0, (item.votes || 0) - 1), voters: voters.filter((id) => id !== userId) }
+            : { ...item, votes: (item.votes || 0) + 1, voters: [...voters, userId] };
+        })
+        .sort((a, b) => (b.votes || 0) - (a.votes || 0));
 
       broadcastRoomState({
         ...currentRoom,
@@ -1031,6 +1689,109 @@ export default function App() {
           senderId: userId
         });
       }
+    }
+  };
+
+  const handleRemoveTrack = (itemId) => {
+    if (isHostRef.current) {
+      handleHostProcessGuestAction({ type: 'REMOVE_TRACK', itemId, senderId: userId });
+    } else {
+      syncServiceRef.current?.sendAction({ type: 'REMOVE_TRACK', itemId, senderId: userId });
+    }
+  };
+
+  const handleAvatarFileChange = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setErrorMsg('Escolha um arquivo de imagem válido.');
+      return;
+    }
+    if (file.size > MAX_AVATAR_FILE_BYTES) {
+      setErrorMsg('A imagem original deve ter até 5 MB.');
+      return;
+    }
+    try {
+      setUserAvatar(await compressAvatarImage(file));
+      setErrorMsg('');
+    } catch (error) {
+      setErrorMsg(error.message || 'Não foi possível usar essa imagem.');
+    }
+  };
+
+  const handleSendChat = (text = chatInput) => {
+    const messageText = text.trim().slice(0, MAX_CHAT_CHARACTERS);
+    if (!messageText) return;
+    const currentRoom = roomStateRef.current;
+    if (!currentRoom) return;
+    const message = {
+      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      senderId: userId,
+      senderName: username.trim(),
+      text: messageText
+    };
+    if (isHostRef.current) handleHostProcessGuestAction({ type: 'CHAT_MESSAGE', message });
+    else syncServiceRef.current?.sendAction({ type: 'CHAT_MESSAGE', message });
+    setChatInput('');
+    setChatError('');
+  };
+
+  const handleSendGif = async (selectedGif = null) => {
+    if (isSendingGif) return;
+    setIsSendingGif(true);
+    setChatError('');
+    try {
+      let gif = selectedGif;
+      if (!gif) {
+        const pastedLink = normalizeTenorGifUrl(gifInput);
+        if (!pastedLink) throw new Error('Cole um link válido do Tenor ou um link direto de GIF.');
+        if (pastedLink.kind === 'image') gif = { gifUrl: pastedLink.url };
+        else {
+          const response = await fetch(`/api/tenor-gifs?url=${encodeURIComponent(pastedLink.url)}`);
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || 'Não foi possível resolver o link do Tenor.');
+          gif = data;
+        }
+      }
+
+      const playableGif = normalizeTenorGifUrl(gif?.gifUrl || '');
+      if (playableGif?.kind !== 'image') throw new Error('O link do Tenor não retornou um GIF compatível.');
+      const message = {
+        id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        senderId: userId,
+        senderName: username.trim(),
+        type: 'gif',
+        gifKind: 'image',
+        gifUrl: playableGif.url
+      };
+      if (isHostRef.current) handleHostProcessGuestAction({ type: 'CHAT_MESSAGE', message });
+      else syncServiceRef.current?.sendAction({ type: 'CHAT_MESSAGE', message });
+      setGifInput('');
+      setGifSearchQuery('');
+      setGifResults([]);
+      setShowGifInput(false);
+    } catch (error) {
+      setChatError(error.message || 'Não foi possível inserir este GIF.');
+    } finally {
+      setIsSendingGif(false);
+    }
+  };
+
+  const leaveRoom = () => {
+    if (isHostRef.current) {
+      const currentRoom = roomStateRef.current;
+      if (currentRoom) broadcastRoomState({ ...currentRoom, chat: [], members: [], closedAt: Date.now() });
+    }
+    syncServiceRef.current?.sendAction({ type: 'USER_LEFT', userId });
+    syncServiceRef.current?.destroy();
+    syncServiceRef.current = null;
+    setInRoom(false);
+    joinedRoomConfirmedRef.current = false;
+    setRoomBrokerIndex(null);
+    if (playerRef.current) {
+      playerRef.current.destroy();
+      playerRef.current = null;
     }
   };
 
@@ -1072,6 +1833,10 @@ export default function App() {
     ...(roomState.queue || []).map((item) => ({ ...item, status: 'queued' })),
     ...(roomState.playlist || []).filter((item) => item.status === 'played')
   ] : [];
+  const isTrackActive = (videoId) => roomState?.playback?.videoId === videoId || (roomState?.playlist || []).some((item) =>
+    item.videoId === videoId && ['queued', 'playing'].includes(item.status)
+  );
+  const isDirectInvite = Boolean(new URLSearchParams(window.location.search).get('room') && new URLSearchParams(window.location.search).get('pin'));
 
   // ============================================================================
   // TELA 1: LOGIN / LOBBY COM FUNDO MOSAICO DE ÁLBUNS ESTILO NETFLIX & SPOTIFY
@@ -1080,9 +1845,9 @@ export default function App() {
     return (
       <div className="relative min-h-screen bg-zinc-950 text-white flex flex-col items-center justify-center p-4 overflow-hidden">
         {/* Mosaico Diagonal de Capas de Álbuns Famosos ao Fundo */}
-        <div className="absolute inset-0 pointer-events-none overflow-hidden select-none">
-          <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-3 p-4 opacity-35 scale-125 -rotate-6 transform origin-center">
-            {[...ALBUM_MOSAIC_COVERS, ...ALBUM_MOSAIC_COVERS].map((coverUrl, index) => (
+        <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden select-none">
+          <div className="absolute -inset-[15%] grid h-[130%] w-[130%] grid-cols-4 auto-rows-fr sm:grid-cols-6 md:grid-cols-8 gap-3 p-4 opacity-55 scale-110 -rotate-6 transform origin-center">
+            {ALBUM_MOSAIC_COVERS.map((coverUrl, index) => (
               <div
                 key={index}
                 className="aspect-square rounded-xl overflow-hidden shadow-lg bg-zinc-900 border border-white/5"
@@ -1090,20 +1855,23 @@ export default function App() {
                 <img
                   src={coverUrl}
                   alt=""
-                  className="w-full h-full object-cover filter saturate-125 contrast-105"
-                  loading="lazy"
+                  className="h-full w-full object-cover saturate-125 contrast-105"
+                  loading={index < 8 ? 'eager' : 'lazy'}
+                  decoding="async"
+                  referrerPolicy="no-referrer"
                 />
               </div>
             ))}
           </div>
           {/* Vinheta Gradiente Estilo Netflix / Spotify sobre as capas */}
-          <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 via-zinc-950/80 to-zinc-950/90" />
+          <div className="absolute inset-0 bg-gradient-to-t from-zinc-950/75 via-zinc-950/55 to-zinc-950/65" />
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_10%,#09090b_85%)]" />
         </div>
 
         {/* Card Central de Entrada */}
         <div className="relative z-10 w-full max-w-md bg-zinc-900/85 backdrop-blur-xl border border-white/10 rounded-3xl p-7 shadow-2xl shadow-black/80">
           <div className="flex items-center gap-3.5 mb-6">
+            <div className="flex items-center gap-3.5 min-w-0">
             <PartyTogetherLogo className="w-13 h-13" iconSize="w-7 h-7" />
             <div>
               <h1 className="text-2xl font-extrabold tracking-tight bg-gradient-to-r from-white via-zinc-100 to-zinc-400 bg-clip-text text-transparent">
@@ -1112,6 +1880,7 @@ export default function App() {
               <p className="text-xs text-zinc-400">
                 Ouça YouTube Music sincronizado com letras ao vivo
               </p>
+            </div>
             </div>
           </div>
 
@@ -1124,7 +1893,7 @@ export default function App() {
             />
             <div className="flex-1 min-w-0">
               <span className="text-[11px] uppercase tracking-wider text-red-400 font-bold block">
-                Seu Avatar na Festa
+                Seu perfil na Festa
               </span>
               <input
                 type="text"
@@ -1134,7 +1903,30 @@ export default function App() {
                 className="w-full mt-0.5 bg-transparent text-sm font-semibold text-white placeholder-zinc-500 focus:outline-none border-b border-zinc-800 focus:border-red-500 pb-0.5"
               />
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                setUserAvatar(getRandomCuteAvatar('party_' + Math.random().toString(36).substring(2, 10)));
+                setErrorMsg('');
+              }}
+              className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition"
+              title="Escolher outro avatar antes de entrar"
+            >
+              <RefreshCw className="w-4 h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => avatarInputRef.current?.click()}
+              className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition"
+              title="Anexar avatar do computador"
+            >
+              <ImagePlus className="w-4 h-4" />
+            </button>
+            <input ref={avatarInputRef} type="file" accept="image/*" onChange={handleAvatarFileChange} className="hidden" />
           </div>
+          <p className="-mt-3 mb-4 px-1 text-[11px] text-zinc-500">
+            Nome e avatar ficam bloqueados durante a party. Imagens de até 5 MB são redimensionadas e comprimidas antes do envio.
+          </p>
 
           {/* Alternador Criar vs Entrar */}
           <div className="grid grid-cols-2 gap-2 p-1 bg-zinc-950/90 rounded-xl mb-5 border border-zinc-800">
@@ -1186,6 +1978,10 @@ export default function App() {
                   className="w-full px-3.5 py-2.5 bg-zinc-950/90 border border-zinc-800 rounded-xl text-sm focus:outline-none focus:border-red-500"
                 />
               </div>
+            ) : isDirectInvite ? (
+              <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3.5 py-3 text-xs text-zinc-300">
+                Entrando na sala <strong className="text-white">{roomCodeInput}</strong> com o PIN do convite.
+              </div>
             ) : (
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1">
@@ -1201,7 +1997,7 @@ export default function App() {
               </div>
             )}
 
-            <div>
+            {mode === 'create' || !isDirectInvite ? <div>
               <label className="block text-xs font-medium text-zinc-400 mb-1">
                 PIN de Acesso da Sala
               </label>
@@ -1215,7 +2011,7 @@ export default function App() {
                   className="w-full pl-10 pr-3.5 py-2.5 bg-zinc-950/90 border border-zinc-800 rounded-xl text-sm focus:outline-none focus:border-red-500"
                 />
               </div>
-            </div>
+            </div> : null}
 
             <button
               type="submit"
@@ -1233,6 +2029,24 @@ export default function App() {
               )}
             </button>
           </form>
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              onClick={() => setShowNews(true)}
+              className="flex shrink-0 items-center gap-1.5 rounded-xl bg-zinc-800 px-3 py-2.5 text-xs font-semibold text-amber-300 hover:bg-zinc-700"
+            >
+              <Bell className="h-4 w-4" /> Novidades
+            </button>
+            <button
+              type="button"
+              onClick={handleInstallApp}
+              className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl bg-zinc-800 py-2.5 text-xs font-semibold text-zinc-200 hover:bg-zinc-700"
+            >
+              <Download className="w-4 h-4" /> {installPrompt ? 'Instalar' : 'Instalar / sidebar'}
+            </button>
+          </div>
+          {showNews && <NewsPanel onClose={() => setShowNews(false)} />}
+          {showInstallHelp && <InstallHelpPanel onClose={() => setShowInstallHelp(false)} />}
         </div>
       </div>
     );
@@ -1243,17 +2057,8 @@ export default function App() {
   // ============================================================================
   return (
     <div className="min-h-screen bg-zinc-950 text-white flex flex-col relative overflow-hidden">
-      {/* Brilho ambiente dinâmico baseado na capa da música atual */}
-      {roomState.playback.thumbnail && (
-        <div
-          className="pointer-events-none fixed inset-0 opacity-15 blur-3xl scale-125 transition-all duration-1000"
-          style={{
-            backgroundImage: `url(${roomState.playback.thumbnail})`,
-            backgroundSize: 'cover',
-            backgroundPosition: 'center'
-          }}
-        />
-      )}
+      {/* Capa do álbum desfocada; troca com crossfade quando a faixa muda. */}
+      <AlbumBackdrop src={roomState.playback.thumbnail} />
 
       {/* Cabeçalho da Sala com o Ícone Oficial */}
       <header className="relative z-10 border-b border-zinc-800/80 bg-zinc-900/75 backdrop-blur-md px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
@@ -1271,17 +2076,41 @@ export default function App() {
             </div>
             <p className="text-xs text-zinc-400">
               Anfitrião: <strong className="text-zinc-200">{roomState.hostName}</strong> •{' '}
-              {roomState.members.length} na festa
+              {(roomState.members || []).length} na festa
             </p>
           </div>
         </div>
 
         <div className="flex items-center gap-2.5">
           <button
+            onClick={handleInstallApp}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold"
+            title="Instalar o app ou ver opções de sidebar"
+          >
+            <Download className="w-3.5 h-3.5" /> {installPrompt ? 'Instalar' : 'Adicionar'}
+          </button>
+          <button
+            onClick={() => setShowNews(true)}
+            title="Novidades"
+            aria-label="Abrir novidades"
+            className="relative rounded-xl bg-zinc-800 p-2 text-amber-300 hover:bg-zinc-700"
+          >
+            <Bell className="h-4 w-4" />
+            <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-amber-400" />
+          </button>
+          <button
             onClick={() => {
-              navigator.clipboard.writeText(`Sala: ${roomState.roomId} | PIN: ${roomState.pinCode}`);
-              setCopied(true);
-              setTimeout(() => setCopied(false), 2000);
+              const inviteUrl = new URL(window.location.href);
+              inviteUrl.search = new URLSearchParams({ room: roomState.roomId, pin: roomState.pinCode }).toString();
+              const markCopied = () => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+              };
+              if (navigator.clipboard?.writeText) {
+                navigator.clipboard.writeText(inviteUrl.toString()).then(markCopied).catch(() => window.prompt('Copie o link do convite:', inviteUrl.toString()));
+              } else {
+                window.prompt('Copie o link do convite:', inviteUrl.toString());
+              }
             }}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold transition cursor-pointer"
           >
@@ -1294,23 +2123,7 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => {
-              if (syncServiceRef.current) {
-                syncServiceRef.current.sendAction({
-                  type: 'USER_LEFT',
-                  userId
-                });
-                syncServiceRef.current.destroy();
-                syncServiceRef.current = null;
-              }
-              setInRoom(false);
-              joinedRoomConfirmedRef.current = false;
-              setRoomBrokerIndex(null);
-              if (playerRef.current) {
-                playerRef.current.destroy();
-                playerRef.current = null;
-              }
-            }}
+            onClick={leaveRoom}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-900 hover:bg-red-950/60 text-zinc-400 hover:text-red-300 border border-zinc-800 text-xs font-semibold transition cursor-pointer"
           >
             <LogOut className="w-3.5 h-3.5" />
@@ -1441,15 +2254,26 @@ export default function App() {
                 />
               </div>
             </div>
+
+            <button
+              type="button"
+              onClick={handleResyncPlayer}
+              disabled={!roomState.playback.videoId || isResyncingPlayer}
+              title="Recarregar a música atual e sincronizar este player com a sala"
+              className="mt-3 flex self-end items-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-950/80 px-3 py-2 text-xs font-semibold text-zinc-300 transition hover:border-red-500/60 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${isResyncingPlayer ? 'animate-spin text-red-400' : ''}`} />
+              {isResyncingPlayer ? 'Sincronizando...' : 'Sincronizar player'}
+            </button>
           </div>
 
           {/* Lista de Participantes com Fotos Fofas Aleatórias */}
           <div className="bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-3xl p-4 shadow-xl">
             <h4 className="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-3 flex items-center gap-1.5">
-              <Users className="w-4 h-4 text-red-500" /> Galera na Party ({roomState.members.length})
+              <Users className="w-4 h-4 text-red-500" /> Galera na Party ({(roomState.members || []).length})
             </h4>
             <div className="flex flex-wrap gap-2.5">
-              {roomState.members.map((m) => (
+              {(roomState.members || []).map((m) => (
                 <div
                   key={m.id}
                   className="pl-1.5 pr-3 py-1 rounded-full text-xs bg-zinc-950 border border-zinc-800 flex items-center gap-2 shadow-sm"
@@ -1461,6 +2285,16 @@ export default function App() {
                   />
                   <span className="font-medium text-zinc-200">{m.name}</span>
                   {m.isHost && <Crown className="w-3.5 h-3.5 text-amber-400" />}
+                  {isHost && m.id !== userId && (
+                    <button
+                      type="button"
+                      title={`Remover ${m.name} da party`}
+                      onClick={() => handleHostProcessGuestAction({ type: 'KICK_MEMBER', userId: m.id, senderId: userId })}
+                      className="text-zinc-500 hover:text-red-400 transition"
+                    >
+                      <UserX className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
@@ -1468,7 +2302,7 @@ export default function App() {
         </div>
 
         {/* Coluna Direita: Abas (Buscar Música | Fila Colaborativa | BetterLyrics) */}
-        <div className="lg:col-span-7 bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-3xl p-5 flex flex-col shadow-xl min-h-[520px]">
+        <div className="lg:col-span-7 flex flex-col rounded-3xl border border-zinc-800 bg-zinc-900/90 p-5 shadow-xl min-h-[520px] lg:h-full">
           <div className="flex flex-wrap items-center justify-between border-b border-zinc-800 pb-3.5 mb-4 gap-2">
             <div className="flex flex-wrap gap-2">
               <button
@@ -1499,6 +2333,15 @@ export default function App() {
                   }`}
               >
                 <Mic2 className="w-3.5 h-3.5" /> Letra (BetterLyrics)
+              </button>
+              <button
+                onClick={() => setActiveTab('chat')}
+                className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'chat'
+                  ? 'bg-red-600 text-white shadow-md shadow-red-600/20'
+                  : 'bg-zinc-950 text-zinc-400 hover:text-white'
+                  }`}
+              >
+                <MessageCircle className="w-3.5 h-3.5" /> Chat ({roomState.chat?.length || 0})
               </button>
             </div>
           </div>
@@ -1569,10 +2412,11 @@ export default function App() {
 
                       <button
                         onClick={() => handleAddTrack(track)}
-                        className="flex items-center gap-1 px-3.5 py-2 rounded-xl bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-600/40 text-xs font-bold transition shrink-0 cursor-pointer"
+                        disabled={isTrackActive(track.videoId)}
+                        className="flex items-center gap-1 px-3.5 py-2 rounded-xl bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-600/40 text-xs font-bold transition shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                       >
                         <Plus className="w-3.5 h-3.5" />
-                        {!roomState.playback.videoId ? 'Tocar Agora' : 'Na Fila'}
+                        {isTrackActive(track.videoId) ? 'Já na playlist' : !roomState.playback.videoId ? 'Tocar Agora' : 'Na Fila'}
                       </button>
                     </div>
                   ))
@@ -1618,19 +2462,36 @@ export default function App() {
                         </div>
                       </div>
 
-                    {item.status === 'queued' ? (
-                      <button
-                        onClick={() => handleVoteTrack(item.id)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-xs font-semibold shrink-0 transition cursor-pointer"
-                      >
-                        <ThumbsUp className="w-3.5 h-3.5 text-red-400" />
-                        <span>{item.votes}</span>
-                      </button>
-                    ) : (
-                      <span className={`text-[10px] uppercase tracking-wide font-bold shrink-0 ${item.status === 'playing' ? 'text-emerald-400' : 'text-zinc-500'}`}>
-                        {item.status === 'playing' ? 'Tocando' : 'Já tocou'}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {item.status === 'queued' ? (
+                        <>
+                          <button
+                            onClick={() => handleVoteTrack(item.id)}
+                            aria-pressed={(item.voters || []).includes(userId)}
+                            title={(item.voters || []).includes(userId) ? 'Retirar curtida' : 'Curtir música'}
+                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition cursor-pointer ${(item.voters || []).includes(userId) ? 'bg-red-950/50 border-red-500/60 text-red-300' : 'bg-zinc-900 hover:bg-zinc-800 border-zinc-700 text-zinc-200'}`}
+                          >
+                            <ThumbsUp className={`w-3.5 h-3.5 ${(item.voters || []).includes(userId) ? 'fill-red-400 text-red-400' : 'text-red-400'}`} />
+                            <span>{item.votes || 0}</span>
+                          </button>
+                          {(isHost || item.addedById === userId || (!item.addedById && item.addedBy === username)) && (
+                            <button onClick={() => handleRemoveTrack(item.id)} title="Remover da fila" className="p-2 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-red-950/40 transition">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          )}
+                        </>
+                      ) : item.status === 'played' ? (
+                        <button
+                          onClick={() => handleAddTrack(item)}
+                          disabled={isTrackActive(item.videoId)}
+                          className="px-3 py-1.5 rounded-xl bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-[10px] font-bold text-zinc-300 disabled:opacity-50"
+                        >
+                          {isTrackActive(item.videoId) ? 'Na playlist' : 'Tocar novamente'}
+                        </button>
+                      ) : (
+                        <span className="text-[10px] uppercase tracking-wide font-bold text-emerald-400">Tocando</span>
+                      )}
+                    </div>
                   </div>
                 ))
               )}
@@ -1692,8 +2553,70 @@ export default function App() {
               )}
             </div>
           )}
+
+          {activeTab === 'chat' && (
+            <div className="flex min-h-0 flex-1 flex-col">
+              <div className="mb-3 flex items-center justify-between border-b border-zinc-800 pb-2">
+                <span className="text-xs text-zinc-500">{roomState.chat?.length || 0}/{MAX_CHAT_MESSAGES} mensagens</span>
+                <span className="text-[10px] text-zinc-600">Histórico temporário da sessão</span>
+              </div>
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {(roomState.chat || []).length === 0 ? (
+                  <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-zinc-500 text-sm">
+                    <MessageCircle className="w-8 h-8 mb-2 opacity-50" />
+                    <p>O chat da party começa por aqui.</p>
+                  </div>
+                ) : (roomState.chat || []).map((message) => <ChatMessageBubble key={message.id} message={message} />)}
+                <div ref={chatEndRef} />
+              </div>
+              <div className="border-t border-zinc-800 pt-3">
+                <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                  {CHAT_REACTIONS.map((emoji) => (
+                    <button key={emoji} type="button" onClick={() => handleSendChat(emoji)} className="px-2 py-1 rounded-lg bg-zinc-950 hover:bg-zinc-800 text-base" aria-label={`Enviar ${emoji}`}>
+                      {emoji}
+                    </button>
+                  ))}
+                  <button type="button" onClick={() => { setShowGifInput((open) => !open); setChatError(''); }} className={`rounded-lg px-2.5 py-1.5 text-xs font-bold ${showGifInput ? 'bg-red-600 text-white' : 'bg-zinc-950 text-zinc-300 hover:bg-zinc-800'}`}>
+                    GIF
+                  </button>
+                </div>
+                {chatError && !showGifInput && <p className="mb-2 text-xs text-red-300">{chatError}</p>}
+                <form onSubmit={(event) => { event.preventDefault(); handleSendChat(); }} className="flex gap-2">
+                  <input
+                    value={chatInput}
+                    onChange={(event) => setChatInput(event.target.value)}
+                    maxLength={MAX_CHAT_CHARACTERS}
+                    placeholder="Escreva uma mensagem ou emoji..."
+                    className="flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-sm focus:outline-none focus:border-red-500"
+                  />
+                  <span className="self-center text-[10px] text-zinc-600">{chatInput.length}/{MAX_CHAT_CHARACTERS}</span>
+                  <button type="submit" disabled={!chatInput.trim()} className="px-4 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white flex items-center gap-2 text-xs font-bold">
+                    <Send className="w-4 h-4" /> Enviar
+                  </button>
+                </form>
+                <p className="mt-2 text-[10px] text-zinc-600">Até {MAX_CHAT_CHARACTERS} caracteres por mensagem; GIFs aparecem em formato sticker.</p>
+              </div>
+            </div>
+          )}
         </div>
       </main>
+      {activeTab === 'chat' && showGifInput && (
+        <TenorGifModal
+          query={gifSearchQuery}
+          onQueryChange={setGifSearchQuery}
+          results={gifResults}
+          isSearching={isSearchingGifs}
+          error={chatError}
+          manualLink={gifInput}
+          onManualLinkChange={setGifInput}
+          isSending={isSendingGif}
+          onChoose={handleSendGif}
+          onSendLink={() => handleSendGif()}
+          onClose={closeTenorGifModal}
+        />
+      )}
+      {showNews && <NewsPanel onClose={() => setShowNews(false)} />}
+      {showInstallHelp && <InstallHelpPanel onClose={() => setShowInstallHelp(false)} />}
     </div>
   );
 }

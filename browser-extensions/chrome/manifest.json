@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Party Together — Sidebar",
+  "description": "Abra o Party Together no painel lateral do Chrome e ChromeOS.",
+  "version": "1.0.0",
+  "minimum_chrome_version": "114",
+  "icons": {
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Abrir Party Together na lateral",
+    "default_icon": "icons/icon-128.png"
+  },
+  "permissions": ["sidePanel"],
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; frame-src https: http://localhost:* http://127.0.0.1:*"
+  }
+}

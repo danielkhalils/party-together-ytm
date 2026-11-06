@@ -1,0 +1,18 @@
+:root { color-scheme: dark; font: 14px system-ui, sans-serif; background: #09090b; color: #f4f4f5; }
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 280px; min-height: 100vh; display: flex; flex-direction: column; }
+header { height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid #27272a; background: #18181b; }
+header img { width: 26px; height: 26px; border-radius: 7px; }
+header strong { flex: 1; font-size: 13px; }
+button, a { cursor: pointer; }
+header button, #change-url { border: 0; border-radius: 7px; background: #27272a; color: #e4e4e7; padding: 7px 9px; }
+form { padding: 12px; border-bottom: 1px solid #27272a; }
+label { display: block; margin-bottom: 7px; color: #a1a1aa; font-size: 11px; }
+.url-row { display: flex; gap: 6px; }
+input { min-width: 0; flex: 1; border: 1px solid #3f3f46; border-radius: 8px; background: #18181b; color: white; padding: 9px; }
+.url-row button { border: 0; border-radius: 8px; background: #dc2626; color: white; font-weight: 700; padding: 0 12px; }
+#form-error { margin: 6px 0 0; color: #fca5a5; font-size: 11px; }
+#empty-state { margin: auto; max-width: 280px; padding: 24px; color: #a1a1aa; text-align: center; line-height: 1.6; }
+iframe { flex: 1; width: 100%; min-height: 0; border: 0; background: #09090b; }
+footer { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; border-top: 1px solid #27272a; font-size: 11px; }
+footer a { color: #fca5a5; }
