@@ -28,6 +28,7 @@ import {
   UserX,
   Download,
   Bell,
+  BellOff,
   ImagePlus,
   X
 } from 'lucide-react';
@@ -136,6 +137,44 @@ function getUserColor(userId = '') {
   let hash = 0;
   for (let i = 0; i < userId.length; i += 1) hash = (hash * 31 + userId.charCodeAt(i)) >>> 0;
   return `hsl(${hash % 360} 78% 66%)`;
+}
+
+function playChatMessageChime() {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+    
+    // Suave e moderno som "pop/chime" de notificação de mensagem (duas notas)
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    osc1.type = 'sine';
+    osc1.frequency.setValueAtTime(659.25, now); // E5
+    gain1.gain.setValueAtTime(0.001, now);
+    gain1.gain.exponentialRampToValueAtTime(0.2, now + 0.02);
+    gain1.gain.exponentialRampToValueAtTime(0.0001, now + 0.15);
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.16);
+
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.type = 'sine';
+    osc2.frequency.setValueAtTime(880, now + 0.08); // A5
+    gain2.gain.setValueAtTime(0.001, now + 0.08);
+    gain2.gain.exponentialRampToValueAtTime(0.25, now + 0.1);
+    gain2.gain.exponentialRampToValueAtTime(0.0001, now + 0.28);
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+    osc2.start(now + 0.08);
+    osc2.stop(now + 0.3);
+
+    setTimeout(() => {
+      try { ctx.close(); } catch {}
+    }, 400);
+  } catch {}
 }
 
 function ensureMemberChatColors(room) {
@@ -588,6 +627,14 @@ export default function App() {
 
   // Abas: 'queue' | 'search' | 'lyrics' | 'chat'
   const [activeTab, setActiveTab] = useState('search');
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
+  const [isChatMuted, setIsChatMuted] = useState(() => {
+    try {
+      return localStorage.getItem('party_chat_muted') === 'true';
+    } catch {
+      return false;
+    }
+  });
   const [chatInput, setChatInput] = useState('');
   const [gifInput, setGifInput] = useState('');
   const [gifSearchQuery, setGifSearchQuery] = useState('');
@@ -599,6 +646,7 @@ export default function App() {
   const [showNews, setShowNews] = useState(false);
   const [showInstallHelp, setShowInstallHelp] = useState(false);
   const closeTenorGifModal = useCallback(() => setShowGifInput(false), []);
+  const chatMessagesContainerRef = useRef(null);
   const chatEndRef = useRef(null);
   const avatarInputRef = useRef(null);
   const [installPrompt, setInstallPrompt] = useState(null);
@@ -1414,10 +1462,48 @@ export default function App() {
     };
   }, [activeLyricIndex, activeTab]);
 
-  const latestChatMessageId = roomState?.chat?.length ? roomState.chat[roomState.chat.length - 1].id : null;
+  const lastKnownChatIdRef = useRef(null);
+
+  // Manter scroll interno das mensagens do chat sem rolar a página inteira
   useEffect(() => {
-    if (activeTab === 'chat') chatEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [latestChatMessageId, activeTab]);
+    if (activeTab === 'chat' && chatMessagesContainerRef.current) {
+      chatMessagesContainerRef.current.scrollTop = chatMessagesContainerRef.current.scrollHeight;
+    }
+  }, [roomState?.chat?.length, activeTab]);
+
+  // Alerta sonoro e selo de notificação de novas mensagens no chat
+  useEffect(() => {
+    const chatList = roomState?.chat || [];
+    if (chatList.length === 0) return;
+
+    const latestMsg = chatList[chatList.length - 1];
+    if (!lastKnownChatIdRef.current) {
+      // Primeira carga das mensagens existentes na sala: apenas memoriza
+      lastKnownChatIdRef.current = latestMsg.id;
+      return;
+    }
+
+    if (lastKnownChatIdRef.current !== latestMsg.id) {
+      lastKnownChatIdRef.current = latestMsg.id;
+
+      // Se a mensagem veio de outro usuário
+      if (latestMsg.senderId !== userId) {
+        if (!isChatMuted) {
+          playChatMessageChime();
+        }
+        if (activeTab !== 'chat') {
+          setUnreadChatCount((count) => count + 1);
+        }
+      }
+    }
+  }, [roomState?.chat, activeTab, userId, isChatMuted]);
+
+  // Zera o selo de mensagens não lidas ao entrar na aba chat
+  useEffect(() => {
+    if (activeTab === 'chat') {
+      setUnreadChatCount(0);
+    }
+  }, [activeTab]);
 
   // Criar Sala como Anfitrião (Inicia com fila e player vazios para o usuário buscar)
   const handleCreateRoom = (e) => {
@@ -2392,6 +2478,7 @@ export default function App() {
           <div className="flex flex-wrap items-center justify-between border-b border-zinc-800 pb-3.5 mb-4 gap-2">
             <div className="flex flex-wrap gap-2">
               <button
+                type="button"
                 onClick={() => setActiveTab('search')}
                 className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'search'
                   ? 'bg-red-600 text-white shadow-md shadow-red-600/20'
@@ -2402,6 +2489,7 @@ export default function App() {
               </button>
 
               <button
+                type="button"
                 onClick={() => setActiveTab('queue')}
                 className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'queue'
                   ? 'bg-red-600 text-white shadow-md shadow-red-600/20'
@@ -2412,6 +2500,7 @@ export default function App() {
               </button>
 
               <button
+                type="button"
                 onClick={() => setActiveTab('lyrics')}
                 className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'lyrics'
                   ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white shadow-md shadow-red-600/20'
@@ -2421,13 +2510,19 @@ export default function App() {
                 <Mic2 className="w-3.5 h-3.5" /> Letra (BetterLyrics)
               </button>
               <button
+                type="button"
                 onClick={() => setActiveTab('chat')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'chat'
+                className={`relative px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'chat'
                   ? 'bg-red-600 text-white shadow-md shadow-red-600/20'
                   : 'bg-zinc-950 text-zinc-400 hover:text-white'
                   }`}
               >
                 <MessageCircle className="w-3.5 h-3.5" /> Chat ({roomState.chat?.length || 0})
+                {unreadChatCount > 0 && activeTab !== 'chat' && (
+                  <span className="inline-flex items-center justify-center min-w-5 h-5 px-1 text-[10px] font-black text-white bg-red-600 rounded-full shadow-lg shadow-red-600/50 animate-pulse border border-zinc-900">
+                    {unreadChatCount > 99 ? '99+' : unreadChatCount}
+                  </span>
+                )}
               </button>
             </div>
           </div>
@@ -2628,16 +2723,50 @@ export default function App() {
             <div className="flex min-h-0 flex-1 flex-col">
               <div className="mb-3 flex items-center justify-between border-b border-zinc-800 pb-2">
                 <span className="text-xs text-zinc-500">{roomState.chat?.length || 0}/{MAX_CHAT_MESSAGES} mensagens</span>
-                <span className="text-[10px] text-zinc-600">Histórico temporário da sessão</span>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsChatMuted((muted) => {
+                        const next = !muted;
+                        try {
+                          localStorage.setItem('party_chat_muted', String(next));
+                        } catch {}
+                        return next;
+                      });
+                    }}
+                    title={isChatMuted ? 'Ativar alerta sonoro de novas mensagens' : 'Silenciar alerta sonoro de novas mensagens'}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer border ${
+                      isChatMuted
+                        ? 'border-zinc-800 bg-zinc-950 text-zinc-500 hover:text-zinc-300'
+                        : 'border-red-500/40 bg-red-600/10 text-red-400 hover:bg-red-600/20'
+                    }`}
+                  >
+                    {isChatMuted ? (
+                      <>
+                        <BellOff className="w-3.5 h-3.5 text-zinc-500" />
+                        <span>Silenciado</span>
+                      </>
+                    ) : (
+                      <>
+                        <Bell className="w-3.5 h-3.5 text-red-400" />
+                        <span>Som ativo</span>
+                      </>
+                    )}
+                  </button>
+                  <span className="hidden sm:inline text-[10px] text-zinc-600">Histórico temporário da sessão</span>
+                </div>
               </div>
-              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div
+                ref={chatMessagesContainerRef}
+                className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              >
                 {(roomState.chat || []).length === 0 ? (
                   <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-zinc-500 text-sm">
                     <MessageCircle className="w-8 h-8 mb-2 opacity-50" />
                     <p>O chat da party começa por aqui.</p>
                   </div>
                 ) : (roomState.chat || []).map((message) => <ChatMessageBubble key={message.id} message={message} />)}
-                <div ref={chatEndRef} />
               </div>
               <div className="border-t border-zinc-800 pt-3">
                 <div className="mb-2 flex flex-wrap items-center gap-1.5">
