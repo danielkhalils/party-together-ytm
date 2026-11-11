@@ -490,6 +490,17 @@ function createPlaylistItem(track, addedBy, status = 'queued') {
   };
 }
 
+const INITIAL_PLAYBACK_STATE = {
+  videoId: null,
+  title: 'Nenhuma música tocando',
+  artist: 'Busque uma música ao lado para começar a festa!',
+  thumbnail: null,
+  addedBy: null,
+  isPlaying: false,
+  trackPosition: 0,
+  updatedAt: 0
+};
+
 function ensureRoomPlaylist(room) {
   if (!room || Array.isArray(room.playlist)) return room;
 
@@ -591,10 +602,47 @@ const SyncedLyricsList = React.memo(function SyncedLyricsList({ lines, activeInd
 );
 
 export default function App() {
-  // Identidade e Avatar Fofo aleatório do usuário
-  const [userId] = useState(() => 'user_' + Math.random().toString(36).substring(2, 9));
-  const [userAvatar, setUserAvatar] = useState(() => getRandomCuteAvatar('party_' + Math.random().toString(36).substring(2, 8)));
-  const [username, setUsername] = useState('');
+  // Identidade e Avatar Fofo aleatório do usuário (persistidos para manter identidade do admin e convidados)
+  const [userId] = useState(() => {
+    try {
+      const stored = localStorage.getItem('party_user_id');
+      if (stored) return stored;
+      const generated = 'user_' + Math.random().toString(36).substring(2, 9);
+      localStorage.setItem('party_user_id', generated);
+      return generated;
+    } catch {
+      return 'user_' + Math.random().toString(36).substring(2, 9);
+    }
+  });
+  const [userAvatar, setUserAvatar] = useState(() => {
+    try {
+      const stored = localStorage.getItem('party_user_avatar');
+      if (stored) return stored;
+    } catch {}
+    return getRandomCuteAvatar('party_' + Math.random().toString(36).substring(2, 8));
+  });
+  const [username, setUsername] = useState(() => {
+    try {
+      return localStorage.getItem('party_username') || '';
+    } catch {
+      return '';
+    }
+  });
+
+  const handleUsernameChange = (newVal) => {
+    setUsername(newVal);
+    try {
+      localStorage.setItem('party_username', newVal);
+    } catch {}
+  };
+
+  const handleAvatarChange = (newVal) => {
+    setUserAvatar(newVal);
+    try {
+      localStorage.setItem('party_user_avatar', newVal);
+    } catch {}
+  };
+
   const [inRoom, setInRoom] = useState(false);
 
   // Dados de criação / entrada na sala
@@ -748,6 +796,16 @@ export default function App() {
       isHost,
       brokerIndex: roomBrokerIndex,
       onStateUpdate: (remoteState) => {
+        if (remoteState?.closedAt) {
+          setInRoom(false);
+          setErrorMsg('A sala foi encerrada pelo anfitrião.');
+          joinedRoomConfirmedRef.current = false;
+          if (playerRef.current) {
+            playerRef.current.destroy();
+            playerRef.current = null;
+          }
+          return;
+        }
         const nextRoom = ensureMemberChatColors(ensureRoomPlaylist(remoteState));
         if (
           !isHostRef.current && joinedRoomConfirmedRef.current &&
@@ -829,19 +887,19 @@ export default function App() {
     };
   }, [inRoom, roomState?.roomId, isHost, roomBrokerIndex, userId, username, userAvatar]);
 
-  // Batimento de presença dos convidados; o anfitrião elimina membros que perderam conexão.
+  // Batimento de presença dos convidados e anfitrião
   useEffect(() => {
-    if (!inRoom || !roomState?.roomId || isHost) return;
+    if (!inRoom || !roomState?.roomId) return;
     const presenceTimer = setInterval(() => {
       syncServiceRef.current?.sendAction({ type: 'USER_HEARTBEAT', userId });
     }, PRESENCE_HEARTBEAT_MS);
-    const leaveRoom = () => syncServiceRef.current?.sendAction({ type: 'USER_LEFT', userId });
-    window.addEventListener('pagehide', leaveRoom);
+    const handleLeave = () => syncServiceRef.current?.sendAction({ type: 'USER_LEFT', userId });
+    window.addEventListener('pagehide', handleLeave);
     return () => {
       clearInterval(presenceTimer);
-      window.removeEventListener('pagehide', leaveRoom);
+      window.removeEventListener('pagehide', handleLeave);
     };
-  }, [inRoom, roomState?.roomId, isHost, userId]);
+  }, [inRoom, roomState?.roomId, userId]);
 
   useEffect(() => {
     if (!inRoom || !isHost) return;
@@ -850,28 +908,23 @@ export default function App() {
       if (!current) return;
       const cutoff = Date.now() - PRESENCE_TIMEOUT_MS;
       const nextMembers = (current.members || []).filter((member) =>
-        member.id === current.hostId || (member.lastSeen || member.joinedAt || 0) >= cutoff
+        (member.lastSeen || member.joinedAt || 0) >= cutoff
       );
-      if (nextMembers.length !== (current.members || []).length) broadcastRoomState({ ...current, members: nextMembers });
+      if (nextMembers.length !== (current.members || []).length) {
+        const remainingNonHost = nextMembers.filter((m) => m.id !== current.hostId);
+        const shouldClear = remainingNonHost.length === 0;
+        broadcastRoomState({
+          ...current,
+          members: nextMembers,
+          chat: shouldClear ? [] : current.chat,
+          queue: shouldClear ? [] : current.queue,
+          playlist: shouldClear ? [] : current.playlist,
+          playback: shouldClear ? { ...INITIAL_PLAYBACK_STATE, updatedAt: Date.now() } : current.playback
+        });
+      }
     }, 10000);
-    const closeSessionOnPageExit = (event) => {
-      if (event.persisted) return;
-      const current = roomStateRef.current;
-      if (!current) return;
-      const closedState = {
-        ...current,
-        chat: [],
-        members: [],
-        closedAt: Date.now(),
-        stateVersion: Math.max(roomRevisionRef.current, Number(current.stateVersion) || 0) + 1
-      };
-      syncServiceRef.current?.broadcastState(closedState);
-      try { localStorage.setItem(`party_room_${current.roomId}`, JSON.stringify(closedState)); } catch {}
-    };
-    window.addEventListener('pagehide', closeSessionOnPageExit);
     return () => {
       clearInterval(presenceSweep);
-      window.removeEventListener('pagehide', closeSessionOnPageExit);
     };
   }, [inRoom, isHost]);
 
@@ -981,10 +1034,18 @@ export default function App() {
     } else if (action.type === 'USER_LEFT') {
       const members = currentRoom.members || [];
       const updatedMembers = members.filter((m) => m.id !== action.userId);
-      if (updatedMembers.length === members.length) return;
+      const remainingNonHost = updatedMembers.filter((m) => m.id !== currentRoom.hostId);
+      const isHostLeaving = action.userId === currentRoom.hostId;
+      const shouldClear = isHostLeaving || remainingNonHost.length === 0;
+
+      if (updatedMembers.length === members.length && !shouldClear) return;
       broadcastRoomState({
         ...currentRoom,
-        members: updatedMembers
+        members: updatedMembers,
+        chat: shouldClear ? [] : currentRoom.chat,
+        queue: shouldClear ? [] : currentRoom.queue,
+        playlist: shouldClear ? [] : currentRoom.playlist,
+        playback: shouldClear ? { ...INITIAL_PLAYBACK_STATE, updatedAt: Date.now() } : currentRoom.playback
       });
     } else if (action.type === 'USER_HEARTBEAT') {
       const members = currentRoom.members || [];
@@ -1553,6 +1614,7 @@ export default function App() {
     setRoomBrokerIndex(null);
     try {
       localStorage.setItem(`party_room_${generatedRoomId}`, JSON.stringify(newRoom));
+      localStorage.setItem(`party_admin_room_${generatedRoomId}`, JSON.stringify({ roomId: generatedRoomId, hostId: userId, pinCode: newRoom.pinCode }));
     } catch {}
 
     setRoomState(newRoom);
@@ -1596,15 +1658,16 @@ export default function App() {
         return;
       }
 
+      const isAdmin = foundRoom.hostId === userId;
       const updatedMembers = (foundRoom.members || []).some((m) => m.id === userId)
-        ? foundRoom.members
+        ? (foundRoom.members || []).map((m) => m.id === userId ? { ...m, isHost: isAdmin || m.isHost, name: username.trim(), avatar: userAvatar, lastSeen: Date.now() } : m)
         : [
             ...(foundRoom.members || []),
             {
               id: userId,
               name: username.trim(),
               avatar: userAvatar,
-              isHost: false,
+              isHost: isAdmin,
               color: getAvailableChatColor(foundRoom.members || []),
               joinedAt: Date.now(),
               lastSeen: Date.now()
@@ -1884,7 +1947,7 @@ export default function App() {
       return;
     }
     try {
-      setUserAvatar(await compressAvatarImage(file));
+      handleAvatarChange(await compressAvatarImage(file));
       setErrorMsg('');
     } catch (error) {
       setErrorMsg(error.message || 'Não foi possível usar essa imagem.');
@@ -1949,10 +2012,58 @@ export default function App() {
     }
   };
 
+  // Sair da sala mantendo a sala aberta para retorno a qualquer momento
   const leaveRoom = () => {
-    if (isHostRef.current) {
-      const currentRoom = roomStateRef.current;
-      if (currentRoom) broadcastRoomState({ ...currentRoom, chat: [], members: [], closedAt: Date.now() });
+    const currentRoom = roomStateRef.current;
+    if (isHostRef.current && currentRoom) {
+      // O admin sai da sala, mas a sala permanece ativa para os membros ou para reentrar
+      const updatedMembers = (currentRoom.members || []).filter((m) => m.id !== userId);
+      const remainingNonHost = updatedMembers.filter((m) => m.id !== currentRoom.hostId);
+      const shouldClear = remainingNonHost.length === 0;
+
+      broadcastRoomState({
+        ...currentRoom,
+        members: updatedMembers,
+        chat: shouldClear ? [] : currentRoom.chat,
+        queue: shouldClear ? [] : currentRoom.queue,
+        playlist: shouldClear ? [] : currentRoom.playlist,
+        playback: shouldClear ? { ...INITIAL_PLAYBACK_STATE, updatedAt: Date.now() } : currentRoom.playback
+      });
+    } else {
+      syncServiceRef.current?.sendAction({ type: 'USER_LEFT', userId });
+    }
+
+    syncServiceRef.current?.destroy();
+    syncServiceRef.current = null;
+    setInRoom(false);
+    joinedRoomConfirmedRef.current = false;
+    setRoomBrokerIndex(null);
+    if (playerRef.current) {
+      playerRef.current.destroy();
+      playerRef.current = null;
+    }
+  };
+
+  // Exclusão definitiva da sala pelo anfitrião
+  const deleteRoom = () => {
+    if (!window.confirm('Tem certeza de que deseja excluir permanentemente esta sala? Todos os membros serão desconectados.')) return;
+    const currentRoom = roomStateRef.current;
+    if (currentRoom) {
+      const closedState = {
+        ...currentRoom,
+        chat: [],
+        queue: [],
+        playlist: [],
+        members: [],
+        closedAt: Date.now(),
+        playback: { ...INITIAL_PLAYBACK_STATE, updatedAt: Date.now() }
+      };
+      broadcastRoomState(closedState);
+      try {
+        localStorage.removeItem(`party_room_${currentRoom.roomId}`);
+        localStorage.removeItem(`party_admin_room_${currentRoom.roomId}`);
+      } catch {}
+      syncServiceRef.current?.clearRetainedState?.();
     }
     syncServiceRef.current?.sendAction({ type: 'USER_LEFT', userId });
     syncServiceRef.current?.destroy();
@@ -2071,14 +2182,14 @@ export default function App() {
                 type="text"
                 placeholder="Digite seu Nickname..."
                 value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                onChange={(e) => handleUsernameChange(e.target.value)}
                 className="w-full mt-0.5 bg-transparent text-sm font-semibold text-white placeholder-zinc-500 focus:outline-none border-b border-zinc-800 focus:border-red-500 pb-0.5"
               />
             </div>
             <button
               type="button"
               onClick={() => {
-                setUserAvatar(getRandomCuteAvatar('party_' + Math.random().toString(36).substring(2, 10)));
+                handleAvatarChange(getRandomCuteAvatar('party_' + Math.random().toString(36).substring(2, 10)));
                 setErrorMsg('');
               }}
               className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition"
@@ -2296,11 +2407,23 @@ export default function App() {
 
           <button
             onClick={leaveRoom}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-900 hover:bg-red-950/60 text-zinc-400 hover:text-red-300 border border-zinc-800 text-xs font-semibold transition cursor-pointer"
+            title={isHost ? 'Sair da sala (mantém a sala aberta para retorno)' : 'Sair da sala'}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800 text-xs font-semibold transition cursor-pointer"
           >
             <LogOut className="w-3.5 h-3.5" />
             Sair
           </button>
+
+          {isHost && (
+            <button
+              onClick={deleteRoom}
+              title="Excluir sala permanentemente para todos"
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-red-950/40 hover:bg-red-900/60 text-red-400 hover:text-red-200 border border-red-900/50 text-xs font-semibold transition cursor-pointer"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              Excluir Sala
+            </button>
+          )}
         </div>
       </header>
 

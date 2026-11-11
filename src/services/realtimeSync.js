@@ -319,6 +319,19 @@ export function startRoomSync({ roomId, isHost, initialState, brokerIndex: prefe
       }
     },
 
+    clearRetainedState() {
+      if (!mqttClient || !mqttClient.isConnected()) return;
+      try {
+        const msg = new paho.Message('');
+        msg.destinationName = stateTopic;
+        msg.retained = true;
+        msg.qos = 1;
+        mqttClient.send(msg);
+      } catch (err) {
+        console.warn('[RealtimeSync] Erro ao limpar mensagem retida via MQTT:', err);
+      }
+    },
+
     destroy() {
       isDestroyed = true;
       if (broadcastChannel) {
