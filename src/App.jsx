@@ -30,7 +30,11 @@ import {
   Bell,
   BellOff,
   ImagePlus,
-  X
+  X,
+  Pencil,
+  ThumbsDown,
+  Timer,
+  RotateCcw
 } from 'lucide-react';
 
 // Ícone Oficial Customizado da Aplicação "Party Together"
@@ -441,11 +445,12 @@ function NewsPanel({ onClose }) {
           <button onClick={onClose} className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white" aria-label="Fechar novidades"><X className="h-5 w-5" /></button>
         </div>
         <ul className="space-y-3 text-sm text-zinc-300">
+          <li>• Votação democrática para pular música: quando a maioria vota, inicia um timer de 30 segundos até avançar.</li>
+          <li>• O administrador da sala pode avançar/retroceder qualquer vídeo para o momento que quiser pela barra do YouTube ou do player.</li>
+          <li>• Usuários e administrador podem alterar seus nomes dentro da sala e retornar usando o nome anterior.</li>
           <li>• Fila sem duplicatas, com remoção controlada e votos únicos.</li>
           <li>• Chat com emojis, GIFs do Tenor e histórico limitado a 50 mensagens.</li>
           <li>• Avatares personalizados, incluindo imagem do seu dispositivo.</li>
-          <li>• Correções de sincronização e instalação como webapp.</li>
-          <li>• Áudio com a tela bloqueada depende do suporte do navegador ao player incorporado do YouTube.</li>
         </ul>
       </div>
     </div>
@@ -490,15 +495,167 @@ function createPlaylistItem(track, addedBy, status = 'queued') {
   };
 }
 
+const SKIP_VOTE_DURATION_MS = 30000;
+
+function getMajorityCount(memberCount) {
+  const total = Math.max(1, Number(memberCount) || 1);
+  return Math.floor(total / 2) + 1;
+}
+
+function reconcileSkipVotes(playback, members = []) {
+  if (!playback || !playback.videoId) {
+    return {
+      ...playback,
+      skipVoters: [],
+      skipTimerEndsAt: null
+    };
+  }
+  const memberIds = new Set((members || []).map((m) => m.id));
+  const rawVoters = Array.isArray(playback.skipVoters) ? playback.skipVoters : [];
+  const validVoters = Array.from(new Set(rawVoters)).filter((id) => memberIds.size === 0 || memberIds.has(id));
+  const majority = getMajorityCount(memberIds.size || 1);
+  const hasMajority = validVoters.length >= majority;
+
+  let skipTimerEndsAt = playback.skipTimerEndsAt || null;
+  if (hasMajority) {
+    if (!skipTimerEndsAt) {
+      skipTimerEndsAt = Date.now() + SKIP_VOTE_DURATION_MS;
+    }
+  } else {
+    skipTimerEndsAt = null;
+  }
+
+  return {
+    ...playback,
+    skipVoters: validVoters,
+    skipTimerEndsAt
+  };
+}
+
+function upsertMemberHistory(history = [], member) {
+  if (!member || !member.id) return history;
+  const cleanName = String(member.name || '').trim();
+  const existingIdx = history.findIndex((item) =>
+    item.id === member.id ||
+    (cleanName && (item.namesHistory || [item.name]).some((n) => n && n.toLowerCase() === cleanName.toLowerCase()))
+  );
+  if (existingIdx >= 0) {
+    const prev = history[existingIdx];
+    const mergedNames = Array.from(
+      new Set([...(prev.namesHistory || []), prev.name, ...(member.namesHistory || []), cleanName].filter(Boolean))
+    );
+    const updated = {
+      ...prev,
+      ...member,
+      name: cleanName || prev.name,
+      namesHistory: mergedNames,
+      color: member.color || prev.color
+    };
+    return history.map((item, idx) => (idx === existingIdx ? updated : item));
+  }
+  return [
+    ...history,
+    {
+      id: member.id,
+      name: cleanName,
+      namesHistory: Array.from(new Set([...(member.namesHistory || []), cleanName].filter(Boolean))),
+      avatar: member.avatar,
+      color: member.color,
+      isHost: Boolean(member.isHost)
+    }
+  ];
+}
+
+function applyUserRenameToRoom(room, targetUserId, newName, previousOldName = '') {
+  if (!room || !targetUserId || !newName) return room;
+  const cleanNewName = String(newName).trim().slice(0, 32);
+  if (!cleanNewName) return room;
+
+  const existingMember = (room.members || []).find((m) => m.id === targetUserId);
+  const oldNames = new Set(
+    [
+      previousOldName,
+      existingMember?.name,
+      ...(existingMember?.namesHistory || []),
+      room.hostId === targetUserId ? room.hostName : ''
+    ].filter(Boolean)
+  );
+
+  const updatedMembers = (room.members || []).map((m) => {
+    if (m.id !== targetUserId) return m;
+    const namesHistory = Array.from(new Set([...(m.namesHistory || []), m.name, cleanNewName].filter(Boolean)));
+    return {
+      ...m,
+      name: cleanNewName,
+      namesHistory,
+      lastSeen: Date.now()
+    };
+  });
+
+  const targetMember = updatedMembers.find((m) => m.id === targetUserId) || {
+    id: targetUserId,
+    name: cleanNewName,
+    namesHistory: [...oldNames, cleanNewName],
+    isHost: room.hostId === targetUserId
+  };
+
+  const updatedHistory = upsertMemberHistory(room.memberHistory || [], targetMember);
+  const isTargetHost = room.hostId === targetUserId || Boolean(existingMember?.isHost);
+  const updatedHostNamesHistory = isTargetHost
+    ? Array.from(new Set([...(room.hostNamesHistory || []), room.hostName, cleanNewName].filter(Boolean)))
+    : room.hostNamesHistory || (room.hostName ? [room.hostName] : []);
+
+  const matchesUserItem = (item) =>
+    item.addedById === targetUserId || (!item.addedById && item.addedBy && oldNames.has(item.addedBy));
+
+  const updatedPlayback = room.playback
+    ? {
+        ...room.playback,
+        addedBy:
+          room.playback.addedById === targetUserId ||
+          (room.playback.addedBy && oldNames.has(room.playback.addedBy))
+            ? cleanNewName
+            : room.playback.addedBy
+      }
+    : room.playback;
+
+  const updatedQueue = (room.queue || []).map((item) =>
+    matchesUserItem(item) ? { ...item, addedBy: cleanNewName, addedById: targetUserId } : item
+  );
+
+  const updatedPlaylist = (room.playlist || []).map((item) =>
+    matchesUserItem(item) ? { ...item, addedBy: cleanNewName, addedById: targetUserId } : item
+  );
+
+  const updatedChat = (room.chat || []).map((msg) =>
+    msg.senderId === targetUserId ? { ...msg, senderName: cleanNewName } : msg
+  );
+
+  return {
+    ...room,
+    hostName: isTargetHost ? cleanNewName : room.hostName,
+    hostNamesHistory: updatedHostNamesHistory,
+    members: updatedMembers,
+    memberHistory: updatedHistory,
+    playback: updatedPlayback,
+    queue: updatedQueue,
+    playlist: updatedPlaylist,
+    chat: updatedChat
+  };
+}
+
 const INITIAL_PLAYBACK_STATE = {
   videoId: null,
   title: 'Nenhuma música tocando',
   artist: 'Busque uma música ao lado para começar a festa!',
   thumbnail: null,
   addedBy: null,
+  addedById: null,
   isPlaying: false,
   trackPosition: 0,
-  updatedAt: 0
+  updatedAt: 0,
+  skipVoters: [],
+  skipTimerEndsAt: null
 };
 
 function ensureRoomPlaylist(room) {
@@ -628,6 +785,39 @@ export default function App() {
       return '';
     }
   });
+  const [previousNames, setPreviousNames] = useState(() => {
+    try {
+      const raw = localStorage.getItem('party_previous_names');
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [lastRoomInfo, setLastRoomInfo] = useState(() => {
+    try {
+      const raw = localStorage.getItem('party_last_room');
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [editingNameInput, setEditingNameInput] = useState('');
+  const [skipCountdownSeconds, setSkipCountdownSeconds] = useState(0);
+
+  const rememberUserName = useCallback((nameToRemember) => {
+    const clean = String(nameToRemember || '').trim().slice(0, 32);
+    if (!clean) return;
+    setPreviousNames((prev) => {
+      const filtered = prev.filter((item) => item.toLowerCase() !== clean.toLowerCase());
+      const next = [clean, ...filtered].slice(0, 8);
+      try {
+        localStorage.setItem('party_previous_names', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
 
   const handleUsernameChange = (newVal) => {
     setUsername(newVal);
@@ -741,11 +931,21 @@ export default function App() {
   const volumeRef = useRef(volume);
   volumeRef.current = volume;
 
+  const usernameRef = useRef(username);
+  usernameRef.current = username;
+
+  const userAvatarRef = useRef(userAvatar);
+  userAvatarRef.current = userAvatar;
+
   const handleSkipNextRef = useRef(() => {});
   const lastAdvancedTrackRef = useRef(null);
   const lastGuestSyncAtRef = useRef(0);
   const lastPlayerUiUpdateRef = useRef(0);
   const manualSyncPendingRef = useRef(false);
+  const lastHostVideoIdRef = useRef(null);
+  const lastHostTimeRef = useRef(0);
+  const lastHostCheckAtRef = useRef(0);
+  const playerControlsHostModeRef = useRef(null);
 
   // 1. Atualiza o Favicon do navegador com o novo ícone da aplicação
   useEffect(() => {
@@ -832,12 +1032,18 @@ export default function App() {
           const remoteVersion = Number(nextRoom.stateVersion) || 0;
           // Ignora snapshots antigos que podem chegar atrasados pelo MQTT.
           if (remoteVersion < currentVersion) return prev;
-          const currentTimestamp = prev.playback?.updatedAt || 0;
-          const remoteTimestamp = nextRoom.playback?.updatedAt || 0;
-          if (isHostRef.current && remoteVersion === currentVersion && remoteTimestamp < currentTimestamp) {
+          if (isHostRef.current && remoteVersion <= currentVersion) {
             return prev;
           }
           roomRevisionRef.current = Math.max(roomRevisionRef.current, remoteVersion);
+
+          // Enquanto o convidado aguarda confirmação de entrada pelo host, preserva sua presença local otimista
+          let mergedMembers = nextRoom.members || [];
+          if (!isHostRef.current && !joinedRoomConfirmedRef.current && !mergedMembers.some((m) => m.id === userId)) {
+            const localSelf = (prev.members || []).find((m) => m.id === userId);
+            if (localSelf) mergedMembers = [...mergedMembers, localSelf];
+          }
+
           const previousMessages = new Map((prev.chat || []).map((message) => [message.id, message]));
           const mergedChat = (nextRoom.chat || []).map((message) => {
             const previous = previousMessages.get(message.id);
@@ -847,7 +1053,9 @@ export default function App() {
             return sameMessage ? previous : message;
           });
           const chatUnchanged = mergedChat.length === (prev.chat || []).length && mergedChat.every((message, index) => message === prev.chat[index]);
-          return chatUnchanged ? { ...nextRoom, chat: prev.chat || [] } : { ...nextRoom, chat: mergedChat };
+          return chatUnchanged
+            ? { ...nextRoom, members: mergedMembers, chat: prev.chat || [] }
+            : { ...nextRoom, members: mergedMembers, chat: mergedChat };
         });
       },
       onAction: (action) => {
@@ -867,8 +1075,8 @@ export default function App() {
           type: 'USER_JOINED',
           member: {
             id: userId,
-            name: username.trim(),
-            avatar: userAvatar,
+            name: usernameRef.current.trim(),
+            avatar: userAvatarRef.current,
             isHost: false,
             lastSeen: Date.now()
           }
@@ -885,7 +1093,7 @@ export default function App() {
       sync.destroy();
       syncServiceRef.current = null;
     };
-  }, [inRoom, roomState?.roomId, isHost, roomBrokerIndex, userId, username, userAvatar]);
+  }, [inRoom, roomState?.roomId, isHost, roomBrokerIndex, userId]);
 
   // Batimento de presença dos convidados e anfitrião
   useEffect(() => {
@@ -908,25 +1116,20 @@ export default function App() {
       if (!current) return;
       const cutoff = Date.now() - PRESENCE_TIMEOUT_MS;
       const nextMembers = (current.members || []).filter((member) =>
-        (member.lastSeen || member.joinedAt || 0) >= cutoff
+        member.id === userId || (member.lastSeen || member.joinedAt || 0) >= cutoff
       );
       if (nextMembers.length !== (current.members || []).length) {
-        const remainingNonHost = nextMembers.filter((m) => m.id !== current.hostId);
-        const shouldClear = remainingNonHost.length === 0;
         broadcastRoomState({
           ...current,
           members: nextMembers,
-          chat: shouldClear ? [] : current.chat,
-          queue: shouldClear ? [] : current.queue,
-          playlist: shouldClear ? [] : current.playlist,
-          playback: shouldClear ? { ...INITIAL_PLAYBACK_STATE, updatedAt: Date.now() } : current.playback
+          playback: reconcileSkipVotes(current.playback, nextMembers)
         });
       }
     }, 10000);
     return () => {
       clearInterval(presenceSweep);
     };
-  }, [inRoom, isHost]);
+  }, [inRoom, isHost, userId]);
 
   const broadcastRoomState = (newState) => {
     const nextVersion = Math.max(
@@ -947,7 +1150,7 @@ export default function App() {
     }
   };
 
-  // O Anfitrião processa ações disparadas por convidados (adicionar à fila, voto, novo participante)
+  // O Anfitrião processa ações disparadas por convidados (adicionar à fila, voto, novo participante, pular música, alterar nome)
   const handleHostProcessGuestAction = (action) => {
     const currentRoom = roomStateRef.current;
     if (!currentRoom) return;
@@ -975,10 +1178,13 @@ export default function App() {
             artist: track.artist,
             thumbnail: track.thumbnail,
             addedBy: action.senderName || 'Convidado',
+            addedById: action.senderId,
             playlistItemId: playlistItem.id,
             isPlaying: true,
             trackPosition: 0,
-            updatedAt: Date.now()
+            updatedAt: Date.now(),
+            skipVoters: [],
+            skipTimerEndsAt: null
           }
         });
       } else {
@@ -1008,44 +1214,86 @@ export default function App() {
         ...currentRoom,
         queue: updatedQueue
       });
+    } else if (action.type === 'VOTE_SKIP_TRACK') {
+      if (!currentRoom.playback?.videoId || !action.senderId) return;
+      const currentVoters = Array.isArray(currentRoom.playback.skipVoters) ? currentRoom.playback.skipVoters : [];
+      const hasVotedSkip = currentVoters.includes(action.senderId);
+      const nextVoters = hasVotedSkip
+        ? currentVoters.filter((id) => id !== action.senderId)
+        : [...currentVoters, action.senderId];
+      const nextPlayback = reconcileSkipVotes(
+        { ...currentRoom.playback, skipVoters: nextVoters },
+        currentRoom.members || []
+      );
+      broadcastRoomState({
+        ...currentRoom,
+        playback: nextPlayback
+      });
+    } else if (action.type === 'RENAME_USER') {
+      if (!action.userId || !action.newName) return;
+      const renamedRoom = applyUserRenameToRoom(currentRoom, action.userId, action.newName, action.oldName || '');
+      broadcastRoomState(renamedRoom);
     } else if (action.type === 'USER_JOINED') {
       if (!action.member || !action.member.id) return;
+      const cleanJoinName = String(action.member.name || 'Convidado').trim().slice(0, 32);
       const members = currentRoom.members || [];
-      const memberIndex = members.findIndex((m) => m.id === action.member.id);
-      const previousMember = members[memberIndex];
+      const history = currentRoom.memberHistory || [];
+
+      // Procura membro existente por ID ou por nome usado anteriormente na sala
+      const matchByNameOrId = (item) =>
+        item.id === action.member.id ||
+        (cleanJoinName && (item.namesHistory || [item.name]).some((n) => n && n.toLowerCase() === cleanJoinName.toLowerCase()));
+
+      const existingMember = members.find(matchByNameOrId);
+      const historyProfile = history.find(matchByNameOrId);
+      const previousProfile = existingMember || historyProfile;
+
+      const mergedNames = Array.from(
+        new Set([...(previousProfile?.namesHistory || []), previousProfile?.name, cleanJoinName].filter(Boolean))
+      );
+
       const member = {
+        ...previousProfile,
         ...action.member,
-        isHost: false,
+        id: action.member.id,
+        name: cleanJoinName,
+        namesHistory: mergedNames,
+        isHost: action.member.id === currentRoom.hostId,
         lastSeen: Date.now(),
         avatar: String(action.member.avatar || '').startsWith('data:image/') && action.member.avatar.length > MAX_AVATAR_DATA_LENGTH
-          ? getRandomCuteAvatar(action.member.name || action.member.id)
-          : action.member.avatar,
-        color: previousMember?.color || getAvailableChatColor(members)
+          ? getRandomCuteAvatar(cleanJoinName || action.member.id)
+          : (action.member.avatar || previousProfile?.avatar),
+        color: previousProfile?.color || getAvailableChatColor(members)
       };
-      if (
-        memberIndex >= 0 && members[memberIndex].name === member.name &&
-        members[memberIndex].avatar === member.avatar && members[memberIndex].color &&
-        Date.now() - (members[memberIndex].lastSeen || 0) < 10000
-      ) return;
-      const updatedMembers = memberIndex >= 0
-        ? members.map((existing, index) => index === memberIndex ? { ...existing, ...member } : existing)
-        : [...members, member];
-      broadcastRoomState({ ...currentRoom, members: updatedMembers });
+
+      const filteredMembers = members.filter((m) => !matchByNameOrId(m));
+      const updatedMembers = [...filteredMembers, member];
+      const updatedHistory = upsertMemberHistory(history, member);
+
+      let nextRoomState = {
+        ...currentRoom,
+        members: updatedMembers,
+        memberHistory: updatedHistory,
+        playback: reconcileSkipVotes(currentRoom.playback, updatedMembers)
+      };
+
+      if (previousProfile && previousProfile.name && previousProfile.name !== cleanJoinName) {
+        nextRoomState = applyUserRenameToRoom(nextRoomState, member.id, cleanJoinName, previousProfile.name);
+      }
+
+      broadcastRoomState(nextRoomState);
     } else if (action.type === 'USER_LEFT') {
       const members = currentRoom.members || [];
+      const leavingMember = members.find((m) => m.id === action.userId);
       const updatedMembers = members.filter((m) => m.id !== action.userId);
-      const remainingNonHost = updatedMembers.filter((m) => m.id !== currentRoom.hostId);
-      const isHostLeaving = action.userId === currentRoom.hostId;
-      const shouldClear = isHostLeaving || remainingNonHost.length === 0;
+      if (updatedMembers.length === members.length) return;
+      const updatedHistory = leavingMember ? upsertMemberHistory(currentRoom.memberHistory || [], leavingMember) : (currentRoom.memberHistory || []);
 
-      if (updatedMembers.length === members.length && !shouldClear) return;
       broadcastRoomState({
         ...currentRoom,
         members: updatedMembers,
-        chat: shouldClear ? [] : currentRoom.chat,
-        queue: shouldClear ? [] : currentRoom.queue,
-        playlist: shouldClear ? [] : currentRoom.playlist,
-        playback: shouldClear ? { ...INITIAL_PLAYBACK_STATE, updatedAt: Date.now() } : currentRoom.playback
+        memberHistory: updatedHistory,
+        playback: reconcileSkipVotes(currentRoom.playback, updatedMembers)
       });
     } else if (action.type === 'USER_HEARTBEAT') {
       const members = currentRoom.members || [];
@@ -1066,7 +1314,13 @@ export default function App() {
       if (action.senderId !== currentRoom.hostId || action.userId === currentRoom.hostId) return;
       const members = currentRoom.members || [];
       const nextMembers = members.filter((member) => member.id !== action.userId);
-      if (nextMembers.length !== members.length) broadcastRoomState({ ...currentRoom, members: nextMembers });
+      if (nextMembers.length !== members.length) {
+        broadcastRoomState({
+          ...currentRoom,
+          members: nextMembers,
+          playback: reconcileSkipVotes(currentRoom.playback, nextMembers)
+        });
+      }
     } else if (action.type === 'CHAT_MESSAGE') {
       const message = action.message;
       if (!message?.senderId) return;
@@ -1078,7 +1332,7 @@ export default function App() {
       const messages = [...(currentRoom.chat || []), {
         id: message.id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         senderId: message.senderId,
-        senderName: String(message.senderName || 'Convidado').slice(0, 32),
+        senderName: String(sender?.name || message.senderName || 'Convidado').slice(0, 32),
         type: isGif ? 'gif' : 'text',
         text,
         gifKind: tenorGif?.kind,
@@ -1271,15 +1525,24 @@ export default function App() {
         return;
       }
 
+      if (playerRef.current && playerControlsHostModeRef.current !== null && playerControlsHostModeRef.current !== isHostRef.current) {
+        try {
+          playerRef.current.destroy();
+        } catch {}
+        playerRef.current = null;
+      }
+
       if (!playerRef.current) {
+        playerControlsHostModeRef.current = isHostRef.current;
         playerRef.current = new window.YT.Player('yt-music-player', {
           height: '100%',
           width: '100%',
           videoId: roomStateRef.current?.playback?.videoId || '',
           playerVars: {
             autoplay: 1,
-            controls: 0,
-            disablekb: 1,
+            controls: isHostRef.current ? 1 : 0,
+            disablekb: isHostRef.current ? 0 : 1,
+            enablejsapi: 1,
             playsinline: 1,
             modestbranding: 1,
             rel: 0,
@@ -1289,6 +1552,7 @@ export default function App() {
             onReady: (event) => {
               event.target.setVolume(volumeRef.current);
               if (roomStateRef.current?.playback?.videoId) {
+                lastHostVideoIdRef.current = roomStateRef.current.playback.videoId;
                 manualSyncPendingRef.current = false;
                 syncGuestPlayerWithRoom(event.target, roomStateRef.current);
               }
@@ -1302,8 +1566,37 @@ export default function App() {
                 return;
               }
 
-              // Recupera pausa local do iframe sem mudar o estado compartilhado da party.
-              if (event.data === window.YT.PlayerState.PAUSED) {
+              // Se o administrador avançou/retrocedeu pela barra nativa do YouTube, propaga imediatamente
+              if (isHostRef.current) {
+                const currentRoom = roomStateRef.current;
+                const curr = event.target?.getCurrentTime?.() || 0;
+                if (currentRoom?.playback?.videoId) {
+                  lastHostVideoIdRef.current = currentRoom.playback.videoId;
+                  const elapsed = currentRoom.playback.isPlaying && event.data !== window.YT.PlayerState.PAUSED
+                    ? Math.max(0, (Date.now() - (currentRoom.playback.updatedAt || Date.now())) / 1000)
+                    : 0;
+                  const expectedPos = (Number(currentRoom.playback.trackPosition) || 0) + elapsed;
+                  if (Math.abs(curr - expectedPos) > 1.0) {
+                    const isNowPlaying = event.data === window.YT.PlayerState.PLAYING ||
+                      (currentRoom.playback.isPlaying && event.data !== window.YT.PlayerState.PAUSED);
+                    lastHostTimeRef.current = curr;
+                    lastHostCheckAtRef.current = Date.now();
+                    setLocalProgress(curr);
+                    broadcastRoomState({
+                      ...currentRoom,
+                      playback: {
+                        ...currentRoom.playback,
+                        trackPosition: curr,
+                        isPlaying: isNowPlaying,
+                        updatedAt: Date.now()
+                      }
+                    });
+                  }
+                }
+              }
+
+              // Recupera pausa local do iframe para convidados sem mudar o estado compartilhado da party.
+              if (event.data === window.YT.PlayerState.PAUSED && !isHostRef.current) {
                 const sharedPlayback = roomStateRef.current?.playback;
                 if (sharedPlayback?.isPlaying) {
                   setTimeout(() => {
@@ -1335,7 +1628,10 @@ export default function App() {
     if (!player || typeof player.getCurrentTime !== 'function') return;
 
     const { videoId, isPlaying, trackPosition, updatedAt } = state.playback;
-    if (!videoId) return;
+    if (!videoId) {
+      player.stopVideo?.();
+      return;
+    }
 
     const loadedVideoUrl = player.getVideoUrl ? player.getVideoUrl() : '';
     if (!loadedVideoUrl || !loadedVideoUrl.includes(videoId)) {
@@ -1344,13 +1640,20 @@ export default function App() {
       }
     }
 
-    const elapsedSeconds = isPlaying ? (Date.now() - updatedAt) / 1000 : 0;
-    const targetTime = trackPosition + elapsedSeconds;
+    const elapsedSeconds = isPlaying ? Math.max(0, (Date.now() - updatedAt) / 1000) : 0;
+    const targetTime = (Number(trackPosition) || 0) + elapsedSeconds;
     const currentLocalTime = player.getCurrentTime() || 0;
+    const drift = Math.abs(currentLocalTime - targetTime);
+    const isRecentSeek = (Date.now() - updatedAt) < 2500;
 
-    if (Math.abs(currentLocalTime - targetTime) > 2) {
+    if (drift > (isRecentSeek ? 0.8 : 1.5)) {
       if (typeof player.seekTo === 'function') {
         player.seekTo(targetTime, true);
+      }
+      setLocalProgress(targetTime);
+      if (isHostRef.current) {
+        lastHostTimeRef.current = targetTime;
+        lastHostCheckAtRef.current = Date.now();
       }
     }
 
@@ -1370,7 +1673,7 @@ export default function App() {
       if (document.visibilityState === 'hidden') return;
       const currentRoom = roomStateRef.current;
       const player = playerRef.current;
-      if (!currentRoom?.playback?.isPlaying || !player) return;
+      if (!currentRoom?.playback?.isPlaying || !player || isHostRef.current) return;
       syncGuestPlayerWithRoom(player, currentRoom);
     };
     document.addEventListener('visibilitychange', recoverPlayback);
@@ -1384,9 +1687,15 @@ export default function App() {
   }, [inRoom]);
 
   useEffect(() => {
-    if (!inRoom || !roomState || !playerRef.current || !roomState.playback.videoId) return;
-    syncGuestPlayerWithRoom(playerRef.current, roomState);
-  }, [roomState?.playback?.videoId, roomState?.playback?.isPlaying]);
+    if (!inRoom || !roomState || !playerRef.current) return;
+    if (!roomState.playback.videoId) {
+      playerRef.current.stopVideo?.();
+      return;
+    }
+    if (!isHostRef.current) {
+      syncGuestPlayerWithRoom(playerRef.current, roomState);
+    }
+  }, [roomState?.playback?.videoId, roomState?.playback?.isPlaying, roomState?.playback?.trackPosition, roomState?.playback?.updatedAt]);
 
   useEffect(() => {
     const mediaSession = navigator.mediaSession;
@@ -1409,12 +1718,31 @@ export default function App() {
     };
   }, [roomState?.playback?.videoId, roomState?.playback?.title, roomState?.playback?.artist, roomState?.playback?.thumbnail, roomState?.playback?.isPlaying]);
 
-  // 8. Loop de alta precisão (250ms) para acompanhar a letra estilo BetterLyrics + Heartbeat e detecção de término
+  // 8. Loop de alta precisão (250ms) para acompanhar a letra + detecção de seek na barra do YouTube + timer de votação (30s)
   useEffect(() => {
     if (!inRoom) return;
 
     let lastHeartbeatSecond = -1;
     const interval = setInterval(() => {
+      const currentRoom = roomStateRef.current;
+      if (currentRoom?.playback?.videoId && currentRoom.playback.skipTimerEndsAt) {
+        const remainingMs = currentRoom.playback.skipTimerEndsAt - Date.now();
+        const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
+        setSkipCountdownSeconds((prev) => (prev !== remainingSec ? remainingSec : prev));
+
+        if (remainingMs <= 0 && isHostRef.current) {
+          const majority = getMajorityCount((currentRoom.members || []).length || 1);
+          const votes = (currentRoom.playback.skipVoters || []).length;
+          if (votes >= majority) {
+            setSkipCountdownSeconds(0);
+            handleSkipNextRef.current();
+            return;
+          }
+        }
+      } else {
+        setSkipCountdownSeconds((prev) => (prev !== 0 ? 0 : prev));
+      }
+
       const player = playerRef.current;
       if (player && typeof player.getCurrentTime === 'function') {
         const curr = player.getCurrentTime() || 0;
@@ -1425,12 +1753,40 @@ export default function App() {
           setDuration(dur);
         }
 
-        const currentRoom = roomStateRef.current;
         if (!currentRoom) return;
 
-        if (currentRoom.playback?.videoId && Date.now() - lastGuestSyncAtRef.current >= 5000) {
-          lastGuestSyncAtRef.current = Date.now();
-          syncGuestPlayerWithRoom(player, currentRoom);
+        // Para convidados: corrige drift a cada 5s. Para o anfitrião: detecta se ele avançou/retrocedeu pela barra do YouTube.
+        if (currentRoom.playback?.videoId) {
+          if (!isHostRef.current) {
+            if (Date.now() - lastGuestSyncAtRef.current >= 5000) {
+              lastGuestSyncAtRef.current = Date.now();
+              syncGuestPlayerWithRoom(player, currentRoom);
+            }
+          } else {
+            const now = Date.now();
+            lastHostVideoIdRef.current = currentRoom.playback.videoId;
+            const elapsed = currentRoom.playback.isPlaying
+              ? Math.max(0, (now - (currentRoom.playback.updatedAt || now)) / 1000)
+              : 0;
+            const expectedPos = (Number(currentRoom.playback.trackPosition) || 0) + elapsed;
+            const timeJump = Math.abs(curr - expectedPos);
+
+            // Se o anfitrião moveu a barra do YouTube (diferença > 1.2s em relação ao esperado)
+            if (timeJump > 1.2 && curr < (dur || 999999) - 0.5) {
+              lastHostTimeRef.current = curr;
+              lastHostCheckAtRef.current = now;
+              setLocalProgress(curr);
+              broadcastRoomState({
+                ...currentRoom,
+                playback: {
+                  ...currentRoom.playback,
+                  trackPosition: curr,
+                  updatedAt: now
+                }
+              });
+              return;
+            }
+          }
         }
 
         // Detecção segura de término de faixa para o Host (garante que avança mesmo se o evento do YouTube atrasar)
@@ -1612,10 +1968,21 @@ export default function App() {
     roomRevisionRef.current = 0;
     joinedRoomConfirmedRef.current = true;
     setRoomBrokerIndex(null);
+    rememberUserName(username.trim());
+
+    const lastInfo = {
+      roomId: generatedRoomId,
+      roomName: newRoom.roomName,
+      pinCode: newRoom.pinCode,
+      username: username.trim(),
+      isHost: true
+    };
     try {
       localStorage.setItem(`party_room_${generatedRoomId}`, JSON.stringify(newRoom));
       localStorage.setItem(`party_admin_room_${generatedRoomId}`, JSON.stringify({ roomId: generatedRoomId, hostId: userId, pinCode: newRoom.pinCode }));
+      localStorage.setItem('party_last_room', JSON.stringify(lastInfo));
     } catch {}
+    setLastRoomInfo(lastInfo);
 
     setRoomState(newRoom);
     setAudioUnlocked(true);
@@ -1658,28 +2025,99 @@ export default function App() {
         return;
       }
 
-      const isAdmin = foundRoom.hostId === userId;
-      const updatedMembers = (foundRoom.members || []).some((m) => m.id === userId)
-        ? (foundRoom.members || []).map((m) => m.id === userId ? { ...m, isHost: isAdmin || m.isHost, name: username.trim(), avatar: userAvatar, lastSeen: Date.now() } : m)
-        : [
-            ...(foundRoom.members || []),
-            {
-              id: userId,
-              name: username.trim(),
-              avatar: userAvatar,
-              isHost: isAdmin,
-              color: getAvailableChatColor(foundRoom.members || []),
-              joinedAt: Date.now(),
-              lastSeen: Date.now()
+      const cleanJoinName = username.trim();
+      rememberUserName(cleanJoinName);
+
+      // Verificação de Administrador (reconhece o admin mesmo retornando à sala)
+      let isAdmin = foundRoom.hostId === userId;
+      try {
+        const storedAdmin = localStorage.getItem(`party_admin_room_${cleanCode}`);
+        if (storedAdmin) {
+          const parsed = JSON.parse(storedAdmin);
+          if (parsed?.roomId === cleanCode) {
+            const matchesHostName =
+              (foundRoom.hostName && foundRoom.hostName.toLowerCase() === cleanJoinName.toLowerCase()) ||
+              (foundRoom.hostNamesHistory || []).some((h) => h && h.toLowerCase() === cleanJoinName.toLowerCase());
+            if (parsed.hostId === userId || matchesHostName || foundRoom.hostId === userId) {
+              isAdmin = true;
             }
-          ];
+          }
+        }
+      } catch {}
+
+      if (!isAdmin) {
+        const matchesHostName =
+          (foundRoom.hostName && foundRoom.hostName.toLowerCase() === cleanJoinName.toLowerCase()) ||
+          (foundRoom.hostNamesHistory || []).some((h) => h && h.toLowerCase() === cleanJoinName.toLowerCase());
+        if (matchesHostName && foundRoom.pinCode === pinInput.trim()) {
+          isAdmin = true;
+        }
+      }
+
+      if (isAdmin) {
+        foundRoom.hostId = userId;
+        foundRoom.hostName = cleanJoinName;
+        try {
+          localStorage.setItem(`party_admin_room_${cleanCode}`, JSON.stringify({ roomId: cleanCode, hostId: userId, pinCode: foundRoom.pinCode }));
+        } catch {}
+      }
+
+      // Procura perfil existente do usuário na sala para restaurar histórico de nomes, cor e avatar
+      const matchMember = (m) =>
+        m.id === userId ||
+        (cleanJoinName && (
+          (m.name && m.name.toLowerCase() === cleanJoinName.toLowerCase()) ||
+          (m.namesHistory || []).some((n) => n && n.toLowerCase() === cleanJoinName.toLowerCase())
+        ));
+
+      const existingMember = (foundRoom.members || []).find(matchMember);
+      const existingHistory = (foundRoom.memberHistory || []).find(matchMember);
+      const previousProfile = existingMember || existingHistory;
+
+      const restoredAvatar = userAvatar || previousProfile?.avatar || getRandomCuteAvatar(cleanJoinName);
+      const restoredColor = previousProfile?.color || getAvailableChatColor(foundRoom.members || []);
+      const mergedNamesHistory = Array.from(new Set([
+        ...(previousProfile?.namesHistory || []),
+        previousProfile?.name,
+        cleanJoinName
+      ].filter(Boolean)));
+
+      const currentMemberRecord = {
+        ...(previousProfile || {}),
+        id: userId,
+        name: cleanJoinName,
+        namesHistory: mergedNamesHistory,
+        avatar: restoredAvatar,
+        color: restoredColor,
+        isHost: isAdmin,
+        joinedAt: previousProfile?.joinedAt || Date.now(),
+        lastSeen: Date.now()
+      };
+
+      const filteredMembers = (foundRoom.members || []).filter((m) => !matchMember(m));
+      const updatedMembers = [...filteredMembers, currentMemberRecord];
+      const updatedHistory = upsertMemberHistory(foundRoom.memberHistory || [], currentMemberRecord);
+
+      const lastInfo = {
+        roomId: cleanCode,
+        roomName: foundRoom.roomName,
+        pinCode: pinInput.trim() || foundRoom.pinCode,
+        username: cleanJoinName,
+        isHost: isAdmin
+      };
+      try {
+        localStorage.setItem('party_last_room', JSON.stringify(lastInfo));
+      } catch {}
+      setLastRoomInfo(lastInfo);
 
       const updatedRoom = ensureMemberChatColors(ensureRoomPlaylist({
         ...foundRoom,
-        members: updatedMembers
+        members: updatedMembers,
+        memberHistory: updatedHistory,
+        playback: reconcileSkipVotes(foundRoom.playback, updatedMembers)
       }));
       roomRevisionRef.current = Number(updatedRoom.stateVersion) || 0;
-      joinedRoomConfirmedRef.current = false;
+      joinedRoomConfirmedRef.current = isAdmin;
       setRoomBrokerIndex(lookupResult.brokerIndex);
 
       try {
@@ -1782,9 +2220,12 @@ export default function App() {
           playlistItemId: null,
           isPlaying: false,
           trackPosition: 0,
-          updatedAt: Date.now()
+          updatedAt: Date.now(),
+          skipVoters: [],
+          skipTimerEndsAt: null
         }
       });
+      setSkipCountdownSeconds(0);
       return;
     }
 
@@ -1812,10 +2253,13 @@ export default function App() {
         playlistItemId: nextTrack.id,
         isPlaying: true,
         trackPosition: 0,
-        updatedAt: Date.now()
+        updatedAt: Date.now(),
+        skipVoters: [],
+        skipTimerEndsAt: null
       },
       queue: remainingQueue
     });
+    setSkipCountdownSeconds(0);
   };
   handleSkipNextRef.current = handleSkipNext;
 
@@ -1848,9 +2292,12 @@ export default function App() {
             playlistItemId: playlistItem.id,
             isPlaying: true,
             trackPosition: 0,
-            updatedAt: Date.now()
+            updatedAt: Date.now(),
+            skipVoters: [],
+            skipTimerEndsAt: null
           }
         });
+        setSkipCountdownSeconds(0);
         setActiveTab('lyrics');
         return;
       }
@@ -2015,6 +2462,20 @@ export default function App() {
   // Sair da sala mantendo a sala aberta para retorno a qualquer momento
   const leaveRoom = () => {
     const currentRoom = roomStateRef.current;
+    if (currentRoom) {
+      const lastInfo = {
+        roomId: currentRoom.roomId,
+        roomName: currentRoom.roomName,
+        pinCode: currentRoom.pinCode,
+        username: username.trim(),
+        isHost: isHostRef.current
+      };
+      try {
+        localStorage.setItem('party_last_room', JSON.stringify(lastInfo));
+      } catch {}
+      setLastRoomInfo(lastInfo);
+    }
+
     if (isHostRef.current && currentRoom) {
       // O admin sai da sala, mas a sala permanece ativa para os membros ou para reentrar
       const updatedMembers = (currentRoom.members || []).filter((m) => m.id !== userId);
@@ -2062,6 +2523,11 @@ export default function App() {
       try {
         localStorage.removeItem(`party_room_${currentRoom.roomId}`);
         localStorage.removeItem(`party_admin_room_${currentRoom.roomId}`);
+        const storedLast = localStorage.getItem('party_last_room');
+        if (storedLast && JSON.parse(storedLast)?.roomId === currentRoom.roomId) {
+          localStorage.removeItem('party_last_room');
+          setLastRoomInfo(null);
+        }
       } catch {}
       syncServiceRef.current?.clearRetainedState?.();
     }
@@ -2094,6 +2560,109 @@ export default function App() {
     });
   };
   seekLyricRef.current = handleSeekToLyric;
+
+  // Avançar ou retroceder a música utilizando a barra de progresso (Anfitrião)
+  const handleProgressBarSeek = (e) => {
+    if (!isHostRef.current || !playerRef.current || !duration || !roomStateRef.current?.playback?.videoId) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const clickX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    const targetSeconds = (clickX / rect.width) * duration;
+
+    if (typeof playerRef.current.seekTo === 'function') {
+      playerRef.current.seekTo(targetSeconds, true);
+    }
+    setLocalProgress(targetSeconds);
+    lastHostTimeRef.current = targetSeconds;
+    lastHostCheckAtRef.current = Date.now();
+
+    const currentRoom = roomStateRef.current;
+    broadcastRoomState({
+      ...currentRoom,
+      playback: {
+        ...currentRoom.playback,
+        trackPosition: targetSeconds,
+        updatedAt: Date.now()
+      }
+    });
+  };
+
+  // Votação democrática para passar a música
+  const handleVoteSkipTrack = () => {
+    if (!roomStateRef.current?.playback?.videoId) return;
+    if (isHostRef.current) {
+      handleHostProcessGuestAction({ type: 'VOTE_SKIP_TRACK', senderId: userId });
+    } else {
+      syncServiceRef.current?.sendAction({ type: 'VOTE_SKIP_TRACK', senderId: userId });
+    }
+  };
+
+  // Alteração de apelido em tempo real pelo usuário dentro da sala
+  const handleOpenEditName = () => {
+    setEditingNameInput(username);
+    setIsEditingName(true);
+  };
+
+  const handleConfirmRename = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const cleanName = editingNameInput.trim().slice(0, 32);
+    if (!cleanName) return;
+
+    const oldName = username;
+    if (cleanName === oldName) {
+      setIsEditingName(false);
+      return;
+    }
+
+    handleUsernameChange(cleanName);
+    rememberUserName(cleanName);
+
+    if (isHostRef.current) {
+      handleHostProcessGuestAction({
+        type: 'RENAME_USER',
+        userId,
+        newName: cleanName,
+        oldName
+      });
+      handleHostProcessGuestAction({
+        type: 'CHAT_MESSAGE',
+        message: {
+          id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          senderId: 'system',
+          senderName: 'Party Together',
+          type: 'text',
+          text: `🔄 ${oldName} alterou seu nome para ${cleanName}.`
+        }
+      });
+    } else {
+      syncServiceRef.current?.sendAction({
+        type: 'RENAME_USER',
+        userId,
+        newName: cleanName,
+        oldName
+      });
+      syncServiceRef.current?.sendAction({
+        type: 'CHAT_MESSAGE',
+        message: {
+          id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          senderId: 'system',
+          senderName: 'Party Together',
+          type: 'text',
+          text: `🔄 ${oldName} alterou seu nome para ${cleanName}.`
+        }
+      });
+    }
+
+    try {
+      const raw = localStorage.getItem('party_last_room');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        localStorage.setItem('party_last_room', JSON.stringify({ ...parsed, username: cleanName }));
+        setLastRoomInfo((prev) => (prev ? { ...prev, username: cleanName } : null));
+      }
+    } catch {}
+
+    setIsEditingName(false);
+  };
 
   const handleVolumeChange = (e) => {
     const val = Number(e.target.value);
@@ -2207,9 +2776,66 @@ export default function App() {
             </button>
             <input ref={avatarInputRef} type="file" accept="image/*" onChange={handleAvatarFileChange} className="hidden" />
           </div>
-          <p className="-mt-3 mb-4 px-1 text-[11px] text-zinc-500">
-            Nome e avatar ficam bloqueados durante a party. Imagens de até 5 MB são redimensionadas e comprimidas antes do envio.
+          <p className="-mt-3 mb-3 px-1 text-[11px] text-zinc-400">
+            Você também pode alterar seu nome e avatar a qualquer momento dentro da sala.
           </p>
+
+          {/* Sugestões de Nomes Utilizados Anteriormente */}
+          {previousNames.length > 0 && (
+            <div className="mb-4 px-1">
+              <span className="text-[11px] text-zinc-400 font-medium block mb-1.5 flex items-center gap-1">
+                <RotateCcw className="w-3 h-3 text-red-400" /> Nomes anteriores:
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {previousNames.map((prevName) => (
+                  <button
+                    key={prevName}
+                    type="button"
+                    onClick={() => handleUsernameChange(prevName)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
+                      username === prevName
+                        ? 'bg-red-600/30 text-red-300 border border-red-500/50'
+                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700/60'
+                    }`}
+                    title={`Usar nome "${prevName}"`}
+                  >
+                    {prevName}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Atalho para Voltar à Última Sala Visitada */}
+          {lastRoomInfo && lastRoomInfo.roomId && (
+            <div className="mb-4 p-3 rounded-2xl bg-zinc-950/80 border border-zinc-800 flex items-center justify-between gap-3 shadow-inner">
+              <div className="min-w-0">
+                <span className="text-[10px] uppercase font-bold text-amber-400 tracking-wider block">
+                  Voltar à última sala
+                </span>
+                <p className="text-xs font-semibold text-zinc-200 truncate">
+                  {lastRoomInfo.roomName || 'Party'} ({lastRoomInfo.roomId})
+                </p>
+                <span className="text-[11px] text-zinc-400">
+                  Nome: <strong className="text-zinc-300">{lastRoomInfo.username || username}</strong> {lastRoomInfo.isHost ? '(Anfitrião)' : ''}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setMode('join');
+                  setRoomCodeInput(lastRoomInfo.roomId);
+                  if (lastRoomInfo.pinCode) setPinInput(lastRoomInfo.pinCode);
+                  if (lastRoomInfo.username) handleUsernameChange(lastRoomInfo.username);
+                }}
+                className="px-3 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 transition shrink-0 cursor-pointer flex items-center gap-1"
+                title="Preencher código e PIN da última sala"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-red-400" />
+                Usar dados
+              </button>
+            </div>
+          )}
 
           {/* Alternador Criar vs Entrar */}
           <div className="grid grid-cols-2 gap-2 p-1 bg-zinc-950/90 rounded-xl mb-5 border border-zinc-800">
@@ -2357,9 +2983,21 @@ export default function App() {
                 PIN: {roomState.pinCode}
               </span>
             </div>
-            <p className="text-xs text-zinc-400">
-              Anfitrião: <strong className="text-zinc-200">{roomState.hostName}</strong> •{' '}
-              {(roomState.members || []).length} na festa
+            <p className="text-xs text-zinc-400 flex items-center flex-wrap gap-1">
+              <span>Anfitrião: <strong className="text-zinc-200">{roomState.hostName}</strong></span>
+              <span>•</span>
+              <span>{(roomState.members || []).length} na festa</span>
+              <span>•</span>
+              <span>Você:</span>
+              <button
+                type="button"
+                onClick={handleOpenEditName}
+                title="Clique para alterar seu apelido nesta sala"
+                className="font-semibold text-zinc-200 hover:text-red-400 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-lg hover:bg-zinc-800 transition cursor-pointer"
+              >
+                <span>{username}</span>
+                <Pencil className="w-3 h-3 text-zinc-400 hover:text-red-400" />
+              </button>
             </p>
           </div>
         </div>
@@ -2470,11 +3108,15 @@ export default function App() {
             <h3 className="text-xl font-bold line-clamp-1">{roomState.playback.title}</h3>
             <p className="text-sm text-zinc-400 mb-4">{roomState.playback.artist}</p>
 
-            {/* Barra de Progresso */}
-            <div className="w-full mb-4">
-              <div className="w-full h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+            {/* Barra de Progresso Interativa para o Anfitrião */}
+            <div
+              className={`w-full mb-4 select-none ${isHost ? 'cursor-pointer group' : ''}`}
+              onClick={isHost ? handleProgressBarSeek : undefined}
+              title={isHost ? 'Clique em qualquer momento para avançar ou retroceder o vídeo' : undefined}
+            >
+              <div className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden relative group-hover:h-2.5 transition-all">
                 <div
-                  className="h-full bg-gradient-to-r from-red-600 to-amber-500 transition-all duration-300"
+                  className="h-full bg-gradient-to-r from-red-600 to-amber-500 transition-all duration-150"
                   style={{
                     width: `${duration ? Math.min(100, (localProgress / duration) * 100) : 0}%`
                   }}
@@ -2482,12 +3124,63 @@ export default function App() {
               </div>
               <div className="flex justify-between text-[11px] text-zinc-500 mt-1 font-mono">
                 <span>{formatTime(localProgress)}</span>
+                {isHost && (
+                  <span className="text-[10px] text-amber-400/80 hidden group-hover:inline">
+                    Barra do YouTube (Anfitrião)
+                  </span>
+                )}
                 <span>{formatTime(duration)}</span>
               </div>
             </div>
 
+            {/* Banner de Contagem Regressiva para Pular Música (30s) */}
+            {Boolean(roomState.playback?.videoId && roomState.playback?.skipTimerEndsAt && skipCountdownSeconds > 0) && (
+              <div className="w-full mb-3 p-3 rounded-2xl bg-amber-950/80 border border-amber-600/70 text-amber-200 shadow-lg flex flex-col gap-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-bold text-amber-300">
+                    <Timer className="w-4 h-4 text-amber-400 shrink-0 animate-spin" style={{ animationDuration: '3s' }} />
+                    <span>A maioria votou para passar a música!</span>
+                  </div>
+                  <span className="text-xs font-extrabold px-2 py-0.5 rounded-full bg-amber-500 text-zinc-950 font-mono">
+                    {skipCountdownSeconds}s
+                  </span>
+                </div>
+                <div className="w-full h-1.5 bg-amber-950 rounded-full overflow-hidden border border-amber-800/60">
+                  <div
+                    className="h-full bg-amber-400 transition-all duration-300"
+                    style={{ width: `${Math.max(0, Math.min(100, (skipCountdownSeconds / 30) * 100))}%` }}
+                  />
+                </div>
+                <div className="flex items-center justify-between text-[11px] text-amber-300/90">
+                  <span>Passando para a próxima faixa em {skipCountdownSeconds}s...</span>
+                  <div className="flex items-center gap-2">
+                    {(roomState.playback.skipVoters || []).includes(userId) && (
+                      <button
+                        type="button"
+                        onClick={handleVoteSkipTrack}
+                        className="underline hover:text-white cursor-pointer font-semibold"
+                        title="Retirar seu voto cancela o timer caso a contagem caia abaixo da maioria"
+                      >
+                        Cancelar meu voto
+                      </button>
+                    )}
+                    {isHost && (
+                      <button
+                        type="button"
+                        onClick={handleSkipNext}
+                        className="px-2 py-0.5 rounded bg-amber-600 hover:bg-amber-500 text-zinc-950 font-bold cursor-pointer"
+                        title="Pular imediatamente sem esperar os 30s"
+                      >
+                        Pular agora
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Controles do Player */}
-            <div className="w-full flex items-center justify-between gap-4 pt-2 border-t border-zinc-800/80">
+            <div className="w-full flex items-center justify-between gap-3 pt-2 border-t border-zinc-800/80">
               {isHost ? (
                 <div className="flex items-center gap-2">
                   <button
@@ -2519,6 +3212,32 @@ export default function App() {
                   <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
                   Sincronizado com {roomState.hostName}
                 </div>
+              )}
+
+              {/* Botão de Votação Democrática para Passar Música */}
+              {roomState.playback?.videoId && (
+                <button
+                  type="button"
+                  onClick={handleVoteSkipTrack}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition cursor-pointer ${
+                    (roomState.playback.skipVoters || []).includes(userId)
+                      ? 'bg-amber-950/70 border-amber-500/70 text-amber-300 hover:bg-amber-900/80'
+                      : 'bg-zinc-800/90 hover:bg-zinc-700/90 border-zinc-700/70 text-zinc-300 hover:text-white'
+                  }`}
+                  title={
+                    (roomState.playback.skipVoters || []).includes(userId)
+                      ? 'Você votou para passar a música. Clique para retirar seu voto.'
+                      : 'Votar democraticamente para passar esta música (quando a maioria votar, inicia timer de 30s)'
+                  }
+                >
+                  <ThumbsDown className={`w-3.5 h-3.5 ${(roomState.playback.skipVoters || []).includes(userId) ? 'text-amber-400' : 'text-zinc-400'}`} />
+                  <span>
+                    {(roomState.playback.skipVoters || []).includes(userId) ? 'Votado p/ passar' : 'Passar música'}
+                  </span>
+                  <span className="px-1.5 py-0.5 rounded-full bg-zinc-950/80 text-[10px] font-mono text-zinc-300">
+                    {(roomState.playback.skipVoters || []).length}/{getMajorityCount((roomState.members || []).length || 1)}
+                  </span>
+                </button>
               )}
 
               {/* Volume Local */}
@@ -2568,30 +3287,47 @@ export default function App() {
               <Users className="w-4 h-4 text-red-500" /> Galera na Party ({(roomState.members || []).length})
             </h4>
             <div className="flex flex-wrap gap-2.5">
-              {(roomState.members || []).map((m) => (
-                <div
-                  key={m.id}
-                  className="pl-1.5 pr-3 py-1 rounded-full text-xs bg-zinc-950 border border-zinc-800 flex items-center gap-2 shadow-sm"
-                >
-                  <img
-                    src={m.avatar || getRandomCuteAvatar(m.name)}
-                    alt={m.name}
-                    className="w-6 h-6 rounded-full bg-zinc-800 object-cover border border-red-500/40"
-                  />
-                  <span className="font-medium text-zinc-200">{m.name}</span>
-                  {m.isHost && <Crown className="w-3.5 h-3.5 text-amber-400" />}
-                  {isHost && m.id !== userId && (
-                    <button
-                      type="button"
-                      title={`Remover ${m.name} da party`}
-                      onClick={() => handleHostProcessGuestAction({ type: 'KICK_MEMBER', userId: m.id, senderId: userId })}
-                      className="text-zinc-500 hover:text-red-400 transition"
-                    >
-                      <UserX className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-              ))}
+              {(roomState.members || []).map((m) => {
+                const isSelf = m.id === userId;
+                return (
+                  <div
+                    key={m.id}
+                    className={`pl-1.5 pr-3 py-1 rounded-full text-xs bg-zinc-950 border flex items-center gap-2 shadow-sm ${
+                      isSelf ? 'border-red-500/60 bg-red-950/20' : 'border-zinc-800'
+                    }`}
+                  >
+                    <img
+                      src={m.avatar || getRandomCuteAvatar(m.name)}
+                      alt={m.name}
+                      className="w-6 h-6 rounded-full bg-zinc-800 object-cover border border-red-500/40"
+                    />
+                    <span className="font-medium text-zinc-200">
+                      {m.name} {isSelf && <span className="text-[10px] text-red-400 font-semibold">(Você)</span>}
+                    </span>
+                    {m.isHost && <Crown className="w-3.5 h-3.5 text-amber-400" />}
+                    {isSelf && (
+                      <button
+                        type="button"
+                        title="Alterar seu nome nesta sala"
+                        onClick={handleOpenEditName}
+                        className="text-zinc-400 hover:text-white transition cursor-pointer ml-0.5"
+                      >
+                        <Pencil className="w-3 h-3" />
+                      </button>
+                    )}
+                    {isHost && m.id !== userId && (
+                      <button
+                        type="button"
+                        title={`Remover ${m.name} da party`}
+                        onClick={() => handleHostProcessGuestAction({ type: 'KICK_MEMBER', userId: m.id, senderId: userId })}
+                        className="text-zinc-500 hover:text-red-400 transition cursor-pointer"
+                      >
+                        <UserX className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -2936,6 +3672,94 @@ export default function App() {
           onSendLink={() => handleSendGif()}
           onClose={closeTenorGifModal}
         />
+      )}
+      {isEditingName && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-red-600/20 text-red-400 flex items-center justify-center">
+                  <Pencil className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-white">Alterar Nome</h3>
+                  <p className="text-[11px] text-zinc-400">Atualiza seu nome para todos na sala</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditingName(false)}
+                className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmRename}>
+              <div className="mb-4">
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                  Seu novo apelido
+                </label>
+                <input
+                  type="text"
+                  value={editingNameInput}
+                  onChange={(e) => setEditingNameInput(e.target.value)}
+                  maxLength={32}
+                  placeholder="Digite seu novo nome..."
+                  autoFocus
+                  className="w-full px-3.5 py-2.5 bg-zinc-950 border border-zinc-700/80 rounded-xl text-sm text-white focus:outline-none focus:border-red-500 placeholder-zinc-500"
+                />
+              </div>
+
+              {/* Nomes anteriores do usuário */}
+              {(() => {
+                const memberHistoryNames = (roomState?.members || []).find((m) => m.id === userId)?.namesHistory || [];
+                const allPreviousNames = Array.from(new Set([...previousNames, ...memberHistoryNames].filter((n) => n && n.trim() && n.trim() !== username.trim())));
+                if (allPreviousNames.length === 0) return null;
+                return (
+                  <div className="mb-5">
+                    <span className="text-[11px] text-zinc-400 font-medium block mb-2 flex items-center gap-1">
+                      <RotateCcw className="w-3 h-3 text-red-400" /> Nomes utilizados anteriormente:
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {allPreviousNames.map((name) => (
+                        <button
+                          key={name}
+                          type="button"
+                          onClick={() => setEditingNameInput(name)}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
+                            editingNameInput === name
+                              ? 'bg-red-600/30 text-red-300 border border-red-500/50'
+                              : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 border border-zinc-700/60'
+                          }`}
+                        >
+                          {name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsEditingName(false)}
+                  className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-300 transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={!editingNameInput.trim() || editingNameInput.trim() === username}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:brightness-110 disabled:opacity-40 text-xs font-bold text-white shadow-md shadow-red-600/30 transition cursor-pointer"
+                >
+                  Salvar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
       {showNews && <NewsPanel onClose={() => setShowNews(false)} />}
       {showInstallHelp && <InstallHelpPanel onClose={() => setShowInstallHelp(false)} />}
