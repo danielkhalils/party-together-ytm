@@ -2595,7 +2595,7 @@ export default function App() {
     });
   };
 
-  // Votação democrática para passar a música
+  // Votação democrática para pular a música
   const handleVoteSkipTrack = () => {
     if (!roomStateRef.current?.playback?.videoId) return;
     if (isHostRef.current) {
@@ -3228,7 +3228,7 @@ export default function App() {
                 <div className="flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-xs font-bold text-amber-300">
                     <Timer className="w-4 h-4 text-amber-400 shrink-0 animate-spin" style={{ animationDuration: '3s' }} />
-                    <span>A maioria votou para passar a música!</span>
+                    <span>A maioria votou para pular a música!</span>
                   </div>
                   <span className="text-xs font-extrabold px-2 py-0.5 rounded-full bg-amber-500 text-zinc-950 font-mono">
                     {skipCountdownSeconds}s
@@ -3303,7 +3303,7 @@ export default function App() {
                 </div>
               )}
 
-              {/* Botão de Votação Democrática para Passar Música */}
+              {/* Botão de Votação Democrática para pular Música */}
               {roomState.playback?.videoId && (
                 <button
                   type="button"
@@ -3315,13 +3315,13 @@ export default function App() {
                   }`}
                   title={
                     (roomState.playback.skipVoters || []).includes(userId)
-                      ? 'Você votou para passar a música. Clique para retirar seu voto.'
-                      : 'Votar democraticamente para passar esta música (quando a maioria votar, inicia timer de 30s)'
+                      ? 'Você votou para pular a música. Clique para retirar seu voto.'
+                      : 'Votar democraticamente para pular esta música (quando a maioria votar, inicia timer de 30s)'
                   }
                 >
                   <ThumbsDown className={`w-3.5 h-3.5 ${(roomState.playback.skipVoters || []).includes(userId) ? 'text-amber-400' : 'text-zinc-400'}`} />
                   <span>
-                    {(roomState.playback.skipVoters || []).includes(userId) ? 'Votado p/ passar' : 'Passar música'}
+                    {(roomState.playback.skipVoters || []).includes(userId) ? 'Votado p/ pular' : 'Pular'}
                   </span>
                   <span className="px-1.5 py-0.5 rounded-full bg-zinc-950/80 text-[10px] font-mono text-zinc-300">
                     {(roomState.playback.skipVoters || []).length}/{getMajorityCount((roomState.members || []).length || 1)}
