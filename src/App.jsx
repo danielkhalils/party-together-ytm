@@ -789,7 +789,7 @@ export default function App() {
     try {
       const raw = localStorage.getItem('party_previous_names');
       const parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+      return Array.isArray(parsed) ? parsed.filter(Boolean).slice(0, 3) : [];
     } catch {
       return [];
     }
@@ -802,10 +802,14 @@ export default function App() {
       return null;
     }
   });
-  const [isEditingName, setIsEditingName] = useState(false);
+  const [isEditingModalOpen, setIsEditingModalOpen] = useState(false);
+  const [editingModalFocus, setEditingModalFocus] = useState('room'); // 'room' | 'name'
   const [editingNameInput, setEditingNameInput] = useState('');
-  const [isEditingRoomName, setIsEditingRoomName] = useState(false);
   const [editingRoomNameInput, setEditingRoomNameInput] = useState('');
+  const [editingRoomIconInput, setEditingRoomIconInput] = useState('');
+  const [roomIconInput, setRoomIconInput] = useState(() => getRandomCuteAvatar('party_room_' + Math.random().toString(36).substring(2, 8)));
+  const roomIconFileInputRef = useRef(null);
+  const editRoomIconFileInputRef = useRef(null);
   const [skipCountdownSeconds, setSkipCountdownSeconds] = useState(0);
 
   const rememberUserName = useCallback((nameToRemember) => {
@@ -813,7 +817,7 @@ export default function App() {
     if (!clean) return;
     setPreviousNames((prev) => {
       const filtered = prev.filter((item) => item.toLowerCase() !== clean.toLowerCase());
-      const next = [clean, ...filtered].slice(0, 8);
+      const next = [clean, ...filtered].slice(0, 3);
       try {
         localStorage.setItem('party_previous_names', JSON.stringify(next));
       } catch {}
@@ -1236,11 +1240,12 @@ export default function App() {
       const renamedRoom = applyUserRenameToRoom(currentRoom, action.userId, action.newName, action.oldName || '');
       broadcastRoomState(renamedRoom);
     } else if (action.type === 'RENAME_ROOM') {
-      const cleanName = String(action.newName || '').trim().slice(0, 50);
-      if (!cleanName) return;
+      const cleanName = action.newName ? String(action.newName).trim().slice(0, 50) : currentRoom.roomName;
+      const nextIcon = action.newIcon !== undefined ? action.newIcon : currentRoom.roomIcon;
       broadcastRoomState({
         ...currentRoom,
-        roomName: cleanName
+        roomName: cleanName,
+        roomIcon: nextIcon
       });
     } else if (action.type === 'USER_JOINED') {
       if (!action.member || !action.member.id) return;
@@ -1944,6 +1949,7 @@ export default function App() {
     const newRoom = {
       roomId: generatedRoomId,
       roomName: roomNameInput.trim() || 'Sessão Party Together',
+      roomIcon: roomIconInput || null,
       pinCode: pinInput.trim() || '1234',
       hostId: userId,
       hostName: username.trim(),
@@ -1982,6 +1988,7 @@ export default function App() {
     const lastInfo = {
       roomId: generatedRoomId,
       roomName: newRoom.roomName,
+      roomIcon: newRoom.roomIcon,
       pinCode: newRoom.pinCode,
       username: username.trim(),
       isHost: true
@@ -2110,6 +2117,7 @@ export default function App() {
       const lastInfo = {
         roomId: cleanCode,
         roomName: foundRoom.roomName,
+        roomIcon: foundRoom.roomIcon || null,
         pinCode: pinInput.trim() || foundRoom.pinCode,
         username: cleanJoinName,
         isHost: isAdmin
@@ -2410,6 +2418,27 @@ export default function App() {
     }
   };
 
+  const handleRoomIconFileChange = async (event, callback) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setErrorMsg('Escolha um arquivo de imagem válido.');
+      return;
+    }
+    if (file.size > MAX_AVATAR_FILE_BYTES) {
+      setErrorMsg('A imagem original deve ter até 5 MB.');
+      return;
+    }
+    try {
+      const compressed = await compressAvatarImage(file);
+      callback(compressed);
+      setErrorMsg('');
+    } catch (error) {
+      setErrorMsg(error.message || 'Não foi possível usar essa imagem para a party.');
+    }
+  };
+
   const handleSendChat = (text = chatInput) => {
     const messageText = text.trim().slice(0, MAX_CHAT_CHARACTERS);
     if (!messageText) return;
@@ -2475,6 +2504,7 @@ export default function App() {
       const lastInfo = {
         roomId: currentRoom.roomId,
         roomName: currentRoom.roomName,
+        roomIcon: currentRoom.roomIcon || null,
         pinCode: currentRoom.pinCode,
         username: username.trim(),
         isHost: isHostRef.current
@@ -2605,124 +2635,112 @@ export default function App() {
     }
   };
 
-  // Alteração de apelido em tempo real pelo usuário dentro da sala
+  // Alteração de apelido e/ou dados da party (nome e ícone) em tempo real
   const handleOpenEditName = () => {
     setEditingNameInput(username);
-    setIsEditingName(true);
-  };
-
-  const handleConfirmRename = (e) => {
-    if (e && e.preventDefault) e.preventDefault();
-    const cleanName = editingNameInput.trim().slice(0, 32);
-    if (!cleanName) return;
-
-    const oldName = username;
-    if (cleanName === oldName) {
-      setIsEditingName(false);
-      return;
-    }
-
-    handleUsernameChange(cleanName);
-    rememberUserName(cleanName);
-
-    if (isHostRef.current) {
-      handleHostProcessGuestAction({
-        type: 'RENAME_USER',
-        userId,
-        newName: cleanName,
-        oldName
-      });
-      handleHostProcessGuestAction({
-        type: 'CHAT_MESSAGE',
-        message: {
-          id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-          senderId: 'system',
-          senderName: 'Party Together',
-          type: 'text',
-          text: `🔄 ${oldName} alterou seu nome para ${cleanName}.`
-        }
-      });
-    } else {
-      syncServiceRef.current?.sendAction({
-        type: 'RENAME_USER',
-        userId,
-        newName: cleanName,
-        oldName
-      });
-      syncServiceRef.current?.sendAction({
-        type: 'CHAT_MESSAGE',
-        message: {
-          id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-          senderId: 'system',
-          senderName: 'Party Together',
-          type: 'text',
-          text: `🔄 ${oldName} alterou seu nome para ${cleanName}.`
-        }
-      });
-    }
-
-    try {
-      const raw = localStorage.getItem('party_last_room');
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        localStorage.setItem('party_last_room', JSON.stringify({ ...parsed, username: cleanName }));
-        setLastRoomInfo((prev) => (prev ? { ...prev, username: cleanName } : null));
-      }
-    } catch {}
-
-    setIsEditingName(false);
-  };
-
-  // Alteração do nome da party em tempo real
-  const handleOpenEditRoomName = () => {
     setEditingRoomNameInput(roomState?.roomName || '');
-    setIsEditingRoomName(true);
+    setEditingRoomIconInput(roomState?.roomIcon || '');
+    setEditingModalFocus('name');
+    setIsEditingModalOpen(true);
   };
 
-  const handleConfirmRenameRoom = (e) => {
+  const handleOpenEditRoomName = () => {
+    setEditingNameInput(username);
+    setEditingRoomNameInput(roomState?.roomName || '');
+    setEditingRoomIconInput(roomState?.roomIcon || '');
+    setEditingModalFocus('room');
+    setIsEditingModalOpen(true);
+  };
+
+  const handleConfirmEditModal = (e) => {
     if (e && e.preventDefault) e.preventDefault();
+
     const cleanRoomName = editingRoomNameInput.trim().slice(0, 50);
-    if (!cleanRoomName) return;
+    const cleanUserName = editingNameInput.trim().slice(0, 32);
+    const cleanRoomIcon = editingRoomIconInput || null;
 
     const oldRoomName = roomState?.roomName || '';
-    if (cleanRoomName === oldRoomName) {
-      setIsEditingRoomName(false);
+    const oldRoomIcon = roomState?.roomIcon || null;
+    const oldUserName = username;
+
+    const roomNameChanged = cleanRoomName && cleanRoomName !== oldRoomName;
+    const roomIconChanged = cleanRoomIcon !== oldRoomIcon;
+    const roomChanged = roomNameChanged || roomIconChanged;
+    const userChanged = cleanUserName && cleanUserName !== oldUserName;
+
+    if (!roomChanged && !userChanged) {
+      setIsEditingModalOpen(false);
       return;
     }
 
-    if (isHostRef.current) {
-      const nextRoom = {
-        ...roomStateRef.current,
-        roomName: cleanRoomName
+    if (userChanged) {
+      handleUsernameChange(cleanUserName);
+      rememberUserName(cleanUserName);
+
+      const action = {
+        type: 'RENAME_USER',
+        userId,
+        newName: cleanUserName,
+        oldName: oldUserName
       };
-      broadcastRoomState(nextRoom);
-      handleHostProcessGuestAction({
+      const chatAction = {
         type: 'CHAT_MESSAGE',
         message: {
           id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
           senderId: 'system',
           senderName: 'Party Together',
           type: 'text',
-          text: `🏷️ O nome da party foi alterado para "${cleanRoomName}".`
+          text: `🔄 ${oldUserName} alterou seu nome para ${cleanUserName}.`
         }
-      });
-    } else {
-      syncServiceRef.current?.sendAction({
-        type: 'RENAME_ROOM',
-        senderId: userId,
-        newName: cleanRoomName,
-        oldName: oldRoomName
-      });
-      syncServiceRef.current?.sendAction({
-        type: 'CHAT_MESSAGE',
-        message: {
-          id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-          senderId: 'system',
-          senderName: 'Party Together',
-          type: 'text',
-          text: `🏷️ ${username} alterou o nome da party para "${cleanRoomName}".`
-        }
-      });
+      };
+
+      if (isHostRef.current) {
+        handleHostProcessGuestAction(action);
+        handleHostProcessGuestAction(chatAction);
+      } else {
+        syncServiceRef.current?.sendAction(action);
+        syncServiceRef.current?.sendAction(chatAction);
+      }
+    }
+
+    if (roomChanged) {
+      const finalRoomName = cleanRoomName || oldRoomName;
+      if (isHostRef.current) {
+        const nextRoom = {
+          ...roomStateRef.current,
+          roomName: finalRoomName,
+          roomIcon: cleanRoomIcon
+        };
+        broadcastRoomState(nextRoom);
+        handleHostProcessGuestAction({
+          type: 'CHAT_MESSAGE',
+          message: {
+            id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            senderId: 'system',
+            senderName: 'Party Together',
+            type: 'text',
+            text: `🏷️ Os dados da party (nome/ícone) foram atualizados para "${finalRoomName}".`
+          }
+        });
+      } else {
+        syncServiceRef.current?.sendAction({
+          type: 'RENAME_ROOM',
+          senderId: userId,
+          newName: finalRoomName,
+          newIcon: cleanRoomIcon,
+          oldName: oldRoomName
+        });
+        syncServiceRef.current?.sendAction({
+          type: 'CHAT_MESSAGE',
+          message: {
+            id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            senderId: 'system',
+            senderName: 'Party Together',
+            type: 'text',
+            text: `🏷️ ${cleanUserName || username} atualizou os dados da party.`
+          }
+        });
+      }
     }
 
     try {
@@ -2730,13 +2748,18 @@ export default function App() {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed.roomId === roomState?.roomId) {
-          localStorage.setItem('party_last_room', JSON.stringify({ ...parsed, roomName: cleanRoomName }));
-          setLastRoomInfo((prev) => (prev ? { ...prev, roomName: cleanRoomName } : null));
+          const updatedLast = {
+            ...parsed,
+            ...(roomChanged ? { roomName: cleanRoomName || oldRoomName, roomIcon: cleanRoomIcon } : {}),
+            ...(userChanged ? { username: cleanUserName } : {})
+          };
+          localStorage.setItem('party_last_room', JSON.stringify(updatedLast));
+          setLastRoomInfo((prev) => (prev ? { ...prev, ...updatedLast } : null));
         }
       }
     } catch {}
 
-    setIsEditingRoomName(false);
+    setIsEditingModalOpen(false);
   };
 
   const handleVolumeChange = (e) => {
@@ -2859,10 +2882,10 @@ export default function App() {
           {previousNames.length > 0 && (
             <div className="mb-4 px-1">
               <span className="text-[11px] text-zinc-400 font-medium block mb-1.5 flex items-center gap-1">
-                <RotateCcw className="w-3 h-3 text-red-400" /> Nomes anteriores:
+                <RotateCcw className="w-3 h-3 text-red-400" /> Nomes recentes (máx. 3):
               </span>
               <div className="flex flex-wrap gap-1.5">
-                {previousNames.map((prevName) => (
+                {previousNames.slice(0, 3).map((prevName) => (
                   <button
                     key={prevName}
                     type="button"
@@ -2952,15 +2975,57 @@ export default function App() {
           <form onSubmit={mode === 'create' ? handleCreateRoom : handleJoinRoom} className="space-y-4">
             {mode === 'create' ? (
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">
-                  Nome da Festa / Sala
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                  Ícone e Nome da Festa / Sala
                 </label>
-                <input
-                  type="text"
-                  value={roomNameInput}
-                  onChange={(e) => setRoomNameInput(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-zinc-950/90 border border-zinc-800 rounded-xl text-sm focus:outline-none focus:border-red-500"
-                />
+                <div className="flex items-center gap-2.5">
+                  <div className="relative shrink-0">
+                    {roomIconInput ? (
+                      <img
+                        src={roomIconInput}
+                        alt="Ícone da Party"
+                        className="w-11 h-11 rounded-2xl bg-zinc-800 object-cover border border-red-500/40 shadow-md"
+                      />
+                    ) : (
+                      <div className="w-11 h-11 rounded-2xl bg-zinc-800 border border-zinc-700 flex items-center justify-center">
+                        <PartyTogetherLogo className="w-8 h-8" iconSize="w-4 h-4" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-1">
+                    <input
+                      type="text"
+                      value={roomNameInput}
+                      onChange={(e) => setRoomNameInput(e.target.value)}
+                      placeholder="Ex: Sexta Indie & Pop"
+                      maxLength={50}
+                      className="w-full px-3.5 py-2.5 bg-zinc-950/90 border border-zinc-800 rounded-xl text-sm focus:outline-none focus:border-red-500"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setRoomIconInput(getRandomCuteAvatar('party_room_' + Math.random().toString(36).substring(2, 10)))}
+                    className="p-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition cursor-pointer shrink-0"
+                    title="Gerar outro ícone fofo para a party"
+                  >
+                    <RefreshCw className="w-4 h-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => roomIconFileInputRef.current?.click()}
+                    className="p-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition cursor-pointer shrink-0"
+                    title="Carregar imagem local do computador para o ícone"
+                  >
+                    <ImagePlus className="w-4 h-4" />
+                  </button>
+                  <input
+                    ref={roomIconFileInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={(e) => handleRoomIconFileChange(e, setRoomIconInput)}
+                    className="hidden"
+                  />
+                </div>
               </div>
             ) : isDirectInvite ? (
               <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3.5 py-3 text-xs text-zinc-300">
@@ -3047,24 +3112,36 @@ export default function App() {
       {/* Cabeçalho da Sala com o Ícone Oficial */}
       <header className="relative z-10 border-b border-zinc-800/80 bg-zinc-900/75 backdrop-blur-md px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <PartyTogetherLogo className="w-10 h-10" iconSize="w-5 h-5" />
+          <button
+            type="button"
+            onClick={handleOpenEditRoomName}
+            title="Clique para alterar o ícone e nome da party"
+            className="relative group transition cursor-pointer shrink-0"
+          >
+            {roomState.roomIcon ? (
+              <img
+                src={roomState.roomIcon}
+                alt={roomState.roomName}
+                className="w-10 h-10 rounded-2xl object-cover border border-red-500/40 bg-zinc-800 shadow-md group-hover:brightness-110 transition"
+              />
+            ) : (
+              <PartyTogetherLogo className="w-10 h-10" iconSize="w-5 h-5" />
+            )}
+            <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-zinc-900 border border-zinc-700 flex items-center justify-center text-zinc-400 group-hover:text-red-400 transition shadow">
+              <Pencil className="w-2.5 h-2.5" />
+            </span>
+          </button>
           <div>
             <div className="flex items-center gap-2">
-              {isHost ? (
-                <button
-                  type="button"
-                  onClick={handleOpenEditRoomName}
-                  title="Clique para alterar o nome da party"
-                  className="font-bold text-base text-white hover:text-red-400 inline-flex items-center gap-1.5 px-1.5 py-0.5 -ml-1.5 rounded-lg hover:bg-zinc-800 transition cursor-pointer text-left group"
-                >
-                  <span className="truncate max-w-[180px] sm:max-w-xs md:max-w-md">{roomState.roomName}</span>
-                  <Pencil className="w-3.5 h-3.5 text-zinc-400 group-hover:text-red-400 shrink-0" />
-                </button>
-              ) : (
-                <h2 className="font-bold text-base truncate max-w-[180px] sm:max-w-xs md:max-w-md" title="Apenas o anfitrião pode alterar o nome da party">
-                  {roomState.roomName}
-                </h2>
-              )}
+              <button
+                type="button"
+                onClick={handleOpenEditRoomName}
+                title="Clique para alterar o nome e ícone da party"
+                className="font-bold text-base text-white hover:text-red-400 inline-flex items-center gap-1.5 px-1.5 py-0.5 -ml-1.5 rounded-lg hover:bg-zinc-800 transition cursor-pointer text-left group"
+              >
+                <span className="truncate max-w-[180px] sm:max-w-xs md:max-w-md">{roomState.roomName}</span>
+                <Pencil className="w-3.5 h-3.5 text-zinc-400 group-hover:text-red-400 shrink-0" />
+              </button>
               <span className="text-xs px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-300 font-mono">
                 {roomState.roomId}
               </span>
@@ -3762,53 +3839,128 @@ export default function App() {
           onClose={closeTenorGifModal}
         />
       )}
-      {isEditingName && (
-        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative animate-in fade-in zoom-in-95 duration-150">
+      {isEditingModalOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsEditingModalOpen(false);
+          }}
+        >
+          <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-xl bg-red-600/20 text-red-400 flex items-center justify-center">
                   <Pencil className="w-4 h-4" />
                 </div>
                 <div>
-                  <h3 className="font-bold text-sm text-white">Alterar Nome</h3>
-                  <p className="text-[11px] text-zinc-400">Atualiza seu nome para todos na sala</p>
+                  <h3 className="font-bold text-sm text-white">Editar Dados da Sessão</h3>
+                  <p className="text-[11px] text-zinc-400">Altere o nome e ícone da party ou seu apelido</p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => setIsEditingName(false)}
-                className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition"
+                onClick={() => setIsEditingModalOpen(false)}
+                className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleConfirmRename}>
-              <div className="mb-4">
-                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                  Seu novo apelido
+            <form onSubmit={handleConfirmEditModal}>
+              {/* Seção 1: Dados da Party */}
+              <div className="mb-4 pb-4 border-b border-zinc-800/80">
+                <label className="block text-xs font-semibold text-zinc-300 mb-2">
+                  Ícone e Nome da Party
+                </label>
+                <div className="flex items-center gap-2.5 mb-2.5">
+                  <div className="relative shrink-0">
+                    {editingRoomIconInput ? (
+                      <img
+                        src={editingRoomIconInput}
+                        alt="Ícone da Party"
+                        className="w-11 h-11 rounded-2xl bg-zinc-800 object-cover border border-red-500/40 shadow-md"
+                      />
+                    ) : (
+                      <div className="w-11 h-11 rounded-2xl bg-zinc-800 border border-zinc-700 flex items-center justify-center">
+                        <PartyTogetherLogo className="w-8 h-8" iconSize="w-4 h-4" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setEditingRoomIconInput(getRandomCuteAvatar('party_room_' + Math.random().toString(36).substring(2, 10)))}
+                      className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition cursor-pointer"
+                      title="Gerar outro ícone fofo"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => editRoomIconFileInputRef.current?.click()}
+                      className="p-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition cursor-pointer"
+                      title="Carregar imagem local do computador"
+                    >
+                      <ImagePlus className="w-3.5 h-3.5" />
+                    </button>
+                    {editingRoomIconInput && (
+                      <button
+                        type="button"
+                        onClick={() => setEditingRoomIconInput('')}
+                        className="p-2 rounded-xl bg-zinc-800/70 hover:bg-zinc-700 text-zinc-400 hover:text-red-400 transition cursor-pointer"
+                        title="Remover ícone personalizado"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                    <input
+                      ref={editRoomIconFileInputRef}
+                      type="file"
+                      accept="image/*"
+                      onChange={(e) => handleRoomIconFileChange(e, setEditingRoomIconInput)}
+                      className="hidden"
+                    />
+                  </div>
+                </div>
+                <input
+                  type="text"
+                  value={editingRoomNameInput}
+                  onChange={(e) => setEditingRoomNameInput(e.target.value)}
+                  maxLength={50}
+                  placeholder="Nome da party..."
+                  autoFocus={editingModalFocus === 'room'}
+                  className="w-full px-3.5 py-2 bg-zinc-950 border border-zinc-700/80 rounded-xl text-sm text-white focus:outline-none focus:border-red-500 placeholder-zinc-500"
+                />
+              </div>
+
+              {/* Seção 2: Apelido do Usuário */}
+              <div className="mb-3">
+                <label className="block text-xs font-semibold text-zinc-300 mb-1.5 flex items-center justify-between">
+                  <span>Seu Apelido</span>
+                  <span className="text-[10px] text-zinc-500 font-mono">{editingNameInput.length}/32</span>
                 </label>
                 <input
                   type="text"
                   value={editingNameInput}
                   onChange={(e) => setEditingNameInput(e.target.value)}
                   maxLength={32}
-                  placeholder="Digite seu novo nome..."
-                  autoFocus
-                  className="w-full px-3.5 py-2.5 bg-zinc-950 border border-zinc-700/80 rounded-xl text-sm text-white focus:outline-none focus:border-red-500 placeholder-zinc-500"
+                  placeholder="Seu apelido..."
+                  autoFocus={editingModalFocus === 'name'}
+                  className="w-full px-3.5 py-2 bg-zinc-950 border border-zinc-700/80 rounded-xl text-sm text-white focus:outline-none focus:border-red-500 placeholder-zinc-500"
                 />
               </div>
 
-              {/* Nomes anteriores do usuário */}
+              {/* Nomes anteriores do usuário (limitado aos 3 últimos) */}
               {(() => {
                 const memberHistoryNames = (roomState?.members || []).find((m) => m.id === userId)?.namesHistory || [];
-                const allPreviousNames = Array.from(new Set([...previousNames, ...memberHistoryNames].filter((n) => n && n.trim() && n.trim() !== username.trim())));
+                const allPreviousNames = Array.from(
+                  new Set([...previousNames, ...memberHistoryNames].filter((n) => n && n.trim() && n.trim() !== username.trim()))
+                ).slice(0, 3);
                 if (allPreviousNames.length === 0) return null;
                 return (
-                  <div className="mb-5">
-                    <span className="text-[11px] text-zinc-400 font-medium block mb-2 flex items-center gap-1">
-                      <RotateCcw className="w-3 h-3 text-red-400" /> Nomes utilizados anteriormente:
+                  <div className="mb-4">
+                    <span className="text-[11px] text-zinc-400 font-medium block mb-1.5 flex items-center gap-1">
+                      <RotateCcw className="w-3 h-3 text-red-400" /> Nomes recentes (máx. 3):
                     </span>
                     <div className="flex flex-wrap gap-1.5">
                       {allPreviousNames.map((name) => (
@@ -3830,80 +3982,22 @@ export default function App() {
                 );
               })()}
 
-              <div className="flex justify-end gap-2">
+              <div className="flex justify-end gap-2 pt-2 border-t border-zinc-800/80">
                 <button
                   type="button"
-                  onClick={() => setIsEditingName(false)}
+                  onClick={() => setIsEditingModalOpen(false)}
                   className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-300 transition cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  disabled={!editingNameInput.trim() || editingNameInput.trim() === username}
-                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:brightness-110 disabled:opacity-40 text-xs font-bold text-white shadow-md shadow-red-600/30 transition cursor-pointer"
-                >
-                  Salvar
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-      {isEditingRoomName && (
-        <div
-          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
-          onClick={(e) => {
-            if (e.target === e.currentTarget) setIsEditingRoomName(false);
-          }}
-        >
-          <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative animate-in fade-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-xl bg-red-600/20 text-red-400 flex items-center justify-center">
-                  <Pencil className="w-4 h-4" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-sm text-white">Alterar Nome da Party</h3>
-                  <p className="text-[11px] text-zinc-400">Atualiza o nome da sala para todos os participantes</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsEditingRoomName(false)}
-                className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleConfirmRenameRoom}>
-              <div className="mb-4">
-                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
-                  Nome da Party
-                </label>
-                <input
-                  type="text"
-                  value={editingRoomNameInput}
-                  onChange={(e) => setEditingRoomNameInput(e.target.value)}
-                  maxLength={50}
-                  placeholder="Ex: Sexta Indie & Pop..."
-                  autoFocus
-                  className="w-full px-3.5 py-2.5 bg-zinc-950 border border-zinc-700/80 rounded-xl text-sm text-white focus:outline-none focus:border-red-500 placeholder-zinc-500"
-                />
-              </div>
-
-              <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => setIsEditingRoomName(false)}
-                  className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-300 transition cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={!editingRoomNameInput.trim() || editingRoomNameInput.trim() === roomState?.roomName}
+                  disabled={
+                    (!editingNameInput.trim() && !editingRoomNameInput.trim()) ||
+                    (editingNameInput.trim() === username &&
+                      editingRoomNameInput.trim() === (roomState?.roomName || '') &&
+                      editingRoomIconInput === (roomState?.roomIcon || ''))
+                  }
                   className="px-4 py-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:brightness-110 disabled:opacity-40 text-xs font-bold text-white shadow-md shadow-red-600/30 transition cursor-pointer"
                 >
                   Salvar
