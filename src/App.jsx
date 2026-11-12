@@ -34,7 +34,8 @@ import {
   Pencil,
   ThumbsDown,
   Timer,
-  RotateCcw
+  RotateCcw,
+  ChevronDown
 } from 'lucide-react';
 
 // Ícone Oficial Customizado da Aplicação "Party Together"
@@ -892,6 +893,11 @@ export default function App() {
   const closeTenorGifModal = useCallback(() => setShowGifInput(false), []);
   const chatMessagesContainerRef = useRef(null);
   const chatEndRef = useRef(null);
+  const [isChatAtBottom, setIsChatAtBottom] = useState(true);
+  const [hasNewMessagesBelow, setHasNewMessagesBelow] = useState(false);
+  const isChatAtBottomRef = useRef(true);
+  const lastScrolledChatIdRef = useRef(null);
+  const prevActiveTabRef = useRef(activeTab);
   const avatarInputRef = useRef(null);
   const [installPrompt, setInstallPrompt] = useState(null);
 
@@ -1895,12 +1901,82 @@ export default function App() {
 
   const lastKnownChatIdRef = useRef(null);
 
-  // Manter scroll interno das mensagens do chat sem rolar a página inteira
-  useEffect(() => {
-    if (activeTab === 'chat' && chatMessagesContainerRef.current) {
-      chatMessagesContainerRef.current.scrollTop = chatMessagesContainerRef.current.scrollHeight;
+  const scrollChatToBottom = useCallback((behavior = 'smooth') => {
+    const container = chatMessagesContainerRef.current;
+    if (!container) return;
+    if (behavior === 'auto' || behavior === 'instant') {
+      container.scrollTop = container.scrollHeight;
+    } else {
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
     }
-  }, [roomState?.chat?.length, activeTab]);
+    isChatAtBottomRef.current = true;
+    setIsChatAtBottom(true);
+    setHasNewMessagesBelow(false);
+  }, []);
+
+  const handleChatScroll = useCallback(() => {
+    const container = chatMessagesContainerRef.current;
+    if (!container) return;
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const atBottom = scrollHeight - scrollTop - clientHeight <= 60;
+    isChatAtBottomRef.current = atBottom;
+    setIsChatAtBottom(atBottom);
+    if (atBottom) {
+      setHasNewMessagesBelow(false);
+    }
+  }, []);
+
+  // Controla o scroll do chat: se estiver no fim das mensagens (ou se foi você quem enviou),
+  // desce automaticamente quando chegar nova mensagem sem forçar rolagem se o usuário subiu para ler
+  useEffect(() => {
+    const container = chatMessagesContainerRef.current;
+    const chatList = roomState?.chat || [];
+    const latestMsg = chatList.length > 0 ? chatList[chatList.length - 1] : null;
+    const latestMsgId = latestMsg ? latestMsg.id : null;
+
+    const tabJustOpened = activeTab === 'chat' && prevActiveTabRef.current !== 'chat';
+    prevActiveTabRef.current = activeTab;
+
+    if (activeTab !== 'chat') {
+      return;
+    }
+
+    if (!container) return;
+
+    // Ao alternar para a aba do chat, rola imediatamente para o final
+    if (tabJustOpened) {
+      container.scrollTop = container.scrollHeight;
+      isChatAtBottomRef.current = true;
+      setIsChatAtBottom(true);
+      setHasNewMessagesBelow(false);
+      lastScrolledChatIdRef.current = latestMsgId;
+      return;
+    }
+
+    // Se chegou uma nova mensagem
+    if (latestMsgId && latestMsgId !== lastScrolledChatIdRef.current) {
+      const isSentByMe = latestMsg.senderId === userId;
+      const wasAtBottom = isChatAtBottomRef.current;
+
+      lastScrolledChatIdRef.current = latestMsgId;
+
+      if (wasAtBottom || isSentByMe) {
+        requestAnimationFrame(() => {
+          if (chatMessagesContainerRef.current) {
+            chatMessagesContainerRef.current.scrollTo({
+              top: chatMessagesContainerRef.current.scrollHeight,
+              behavior: 'smooth'
+            });
+            isChatAtBottomRef.current = true;
+            setIsChatAtBottom(true);
+            setHasNewMessagesBelow(false);
+          }
+        });
+      } else {
+        setHasNewMessagesBelow(true);
+      }
+    }
+  }, [roomState?.chat, activeTab, userId]);
 
   // Alerta sonoro e selo de notificação de novas mensagens no chat
   useEffect(() => {
@@ -2454,6 +2530,12 @@ export default function App() {
     else syncServiceRef.current?.sendAction({ type: 'CHAT_MESSAGE', message });
     setChatInput('');
     setChatError('');
+    isChatAtBottomRef.current = true;
+    setIsChatAtBottom(true);
+    setHasNewMessagesBelow(false);
+    requestAnimationFrame(() => {
+      scrollChatToBottom('smooth');
+    });
   };
 
   const handleSendGif = async (selectedGif = null) => {
@@ -2490,6 +2572,12 @@ export default function App() {
       setGifSearchQuery('');
       setGifResults([]);
       setShowGifInput(false);
+      isChatAtBottomRef.current = true;
+      setIsChatAtBottom(true);
+      setHasNewMessagesBelow(false);
+      requestAnimationFrame(() => {
+        scrollChatToBottom('smooth');
+      });
     } catch (error) {
       setChatError(error.message || 'Não foi possível inserir este GIF.');
     } finally {
@@ -3782,16 +3870,41 @@ export default function App() {
                   <span className="hidden sm:inline text-[10px] text-zinc-600">Histórico temporário da sessão</span>
                 </div>
               </div>
-              <div
-                ref={chatMessagesContainerRef}
-                className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-              >
-                {(roomState.chat || []).length === 0 ? (
-                  <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-zinc-500 text-sm">
-                    <MessageCircle className="w-8 h-8 mb-2 opacity-50" />
-                    <p>O chat da party começa por aqui.</p>
+              <div className="relative min-h-0 flex-1">
+                <div
+                  ref={chatMessagesContainerRef}
+                  onScroll={handleChatScroll}
+                  className="h-full space-y-3 overflow-y-auto pr-1 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                >
+                  {(roomState.chat || []).length === 0 ? (
+                    <div className="h-full min-h-[220px] flex flex-col items-center justify-center text-zinc-500 text-sm">
+                      <MessageCircle className="w-8 h-8 mb-2 opacity-50" />
+                      <p>O chat da party começa por aqui.</p>
+                    </div>
+                  ) : (
+                    (roomState.chat || []).map((message) => <ChatMessageBubble key={message.id} message={message} />)
+                  )}
+                  <div ref={chatEndRef} />
+                </div>
+
+                {(!isChatAtBottom || hasNewMessagesBelow) && (
+                  <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+                    <button
+                      type="button"
+                      onClick={() => scrollChatToBottom('smooth')}
+                      className="pointer-events-auto flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-zinc-800/95 hover:bg-zinc-700 text-white text-xs font-semibold backdrop-blur-md border border-zinc-700 shadow-xl transition-all cursor-pointer animate-in fade-in zoom-in-95 duration-150"
+                    >
+                      <ChevronDown className={`w-3.5 h-3.5 ${hasNewMessagesBelow ? 'text-red-400' : 'text-zinc-400'}`} />
+                      <span>{hasNewMessagesBelow ? 'Novas mensagens' : 'Ir para o final'}</span>
+                      {hasNewMessagesBelow && (
+                        <span className="flex h-2 w-2 relative">
+                          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                          <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                        </span>
+                      )}
+                    </button>
                   </div>
-                ) : (roomState.chat || []).map((message) => <ChatMessageBubble key={message.id} message={message} />)}
+                )}
               </div>
               <div className="border-t border-zinc-800 pt-3">
                 <div className="mb-2 flex flex-wrap items-center gap-1.5">
