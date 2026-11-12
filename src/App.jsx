@@ -804,6 +804,8 @@ export default function App() {
   });
   const [isEditingName, setIsEditingName] = useState(false);
   const [editingNameInput, setEditingNameInput] = useState('');
+  const [isEditingRoomName, setIsEditingRoomName] = useState(false);
+  const [editingRoomNameInput, setEditingRoomNameInput] = useState('');
   const [skipCountdownSeconds, setSkipCountdownSeconds] = useState(0);
 
   const rememberUserName = useCallback((nameToRemember) => {
@@ -1233,6 +1235,13 @@ export default function App() {
       if (!action.userId || !action.newName) return;
       const renamedRoom = applyUserRenameToRoom(currentRoom, action.userId, action.newName, action.oldName || '');
       broadcastRoomState(renamedRoom);
+    } else if (action.type === 'RENAME_ROOM') {
+      const cleanName = String(action.newName || '').trim().slice(0, 50);
+      if (!cleanName) return;
+      broadcastRoomState({
+        ...currentRoom,
+        roomName: cleanName
+      });
     } else if (action.type === 'USER_JOINED') {
       if (!action.member || !action.member.id) return;
       const cleanJoinName = String(action.member.name || 'Convidado').trim().slice(0, 32);
@@ -2664,6 +2673,72 @@ export default function App() {
     setIsEditingName(false);
   };
 
+  // Alteração do nome da party em tempo real
+  const handleOpenEditRoomName = () => {
+    setEditingRoomNameInput(roomState?.roomName || '');
+    setIsEditingRoomName(true);
+  };
+
+  const handleConfirmRenameRoom = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const cleanRoomName = editingRoomNameInput.trim().slice(0, 50);
+    if (!cleanRoomName) return;
+
+    const oldRoomName = roomState?.roomName || '';
+    if (cleanRoomName === oldRoomName) {
+      setIsEditingRoomName(false);
+      return;
+    }
+
+    if (isHostRef.current) {
+      const nextRoom = {
+        ...roomStateRef.current,
+        roomName: cleanRoomName
+      };
+      broadcastRoomState(nextRoom);
+      handleHostProcessGuestAction({
+        type: 'CHAT_MESSAGE',
+        message: {
+          id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          senderId: 'system',
+          senderName: 'Party Together',
+          type: 'text',
+          text: `🏷️ O nome da party foi alterado para "${cleanRoomName}".`
+        }
+      });
+    } else {
+      syncServiceRef.current?.sendAction({
+        type: 'RENAME_ROOM',
+        senderId: userId,
+        newName: cleanRoomName,
+        oldName: oldRoomName
+      });
+      syncServiceRef.current?.sendAction({
+        type: 'CHAT_MESSAGE',
+        message: {
+          id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          senderId: 'system',
+          senderName: 'Party Together',
+          type: 'text',
+          text: `🏷️ ${username} alterou o nome da party para "${cleanRoomName}".`
+        }
+      });
+    }
+
+    try {
+      const raw = localStorage.getItem('party_last_room');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed.roomId === roomState?.roomId) {
+          localStorage.setItem('party_last_room', JSON.stringify({ ...parsed, roomName: cleanRoomName }));
+          setLastRoomInfo((prev) => (prev ? { ...prev, roomName: cleanRoomName } : null));
+        }
+      }
+    } catch {}
+
+    setIsEditingRoomName(false);
+  };
+
   const handleVolumeChange = (e) => {
     const val = Number(e.target.value);
     setVolume(val);
@@ -2975,7 +3050,21 @@ export default function App() {
           <PartyTogetherLogo className="w-10 h-10" iconSize="w-5 h-5" />
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="font-bold text-base">{roomState.roomName}</h2>
+              {isHost ? (
+                <button
+                  type="button"
+                  onClick={handleOpenEditRoomName}
+                  title="Clique para alterar o nome da party"
+                  className="font-bold text-base text-white hover:text-red-400 inline-flex items-center gap-1.5 px-1.5 py-0.5 -ml-1.5 rounded-lg hover:bg-zinc-800 transition cursor-pointer text-left group"
+                >
+                  <span className="truncate max-w-[180px] sm:max-w-xs md:max-w-md">{roomState.roomName}</span>
+                  <Pencil className="w-3.5 h-3.5 text-zinc-400 group-hover:text-red-400 shrink-0" />
+                </button>
+              ) : (
+                <h2 className="font-bold text-base truncate max-w-[180px] sm:max-w-xs md:max-w-md" title="Apenas o anfitrião pode alterar o nome da party">
+                  {roomState.roomName}
+                </h2>
+              )}
               <span className="text-xs px-2 py-0.5 rounded-full bg-zinc-800 text-zinc-300 font-mono">
                 {roomState.roomId}
               </span>
@@ -3752,6 +3841,69 @@ export default function App() {
                 <button
                   type="submit"
                   disabled={!editingNameInput.trim() || editingNameInput.trim() === username}
+                  className="px-4 py-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:brightness-110 disabled:opacity-40 text-xs font-bold text-white shadow-md shadow-red-600/30 transition cursor-pointer"
+                >
+                  Salvar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {isEditingRoomName && (
+        <div
+          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsEditingRoomName(false);
+          }}
+        >
+          <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-red-600/20 text-red-400 flex items-center justify-center">
+                  <Pencil className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-white">Alterar Nome da Party</h3>
+                  <p className="text-[11px] text-zinc-400">Atualiza o nome da sala para todos os participantes</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsEditingRoomName(false)}
+                className="text-zinc-400 hover:text-white p-1 rounded-lg hover:bg-zinc-800 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleConfirmRenameRoom}>
+              <div className="mb-4">
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                  Nome da Party
+                </label>
+                <input
+                  type="text"
+                  value={editingRoomNameInput}
+                  onChange={(e) => setEditingRoomNameInput(e.target.value)}
+                  maxLength={50}
+                  placeholder="Ex: Sexta Indie & Pop..."
+                  autoFocus
+                  className="w-full px-3.5 py-2.5 bg-zinc-950 border border-zinc-700/80 rounded-xl text-sm text-white focus:outline-none focus:border-red-500 placeholder-zinc-500"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsEditingRoomName(false)}
+                  className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-300 transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={!editingRoomNameInput.trim() || editingRoomNameInput.trim() === roomState?.roomName}
                   className="px-4 py-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:brightness-110 disabled:opacity-40 text-xs font-bold text-white shadow-md shadow-red-600/30 transition cursor-pointer"
                 >
                   Salvar
