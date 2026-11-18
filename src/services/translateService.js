@@ -1,5 +1,6 @@
 // Cache em memória de traduções para resposta imediata
-const translationCache = new Map();
+const songTranslationCache = new Map();
+const clientVerseCache = new Map();
 
 export const SUPPORTED_LANGUAGES = [
   { code: 'pt', label: 'Português', flag: '🇧🇷' },
@@ -11,6 +12,19 @@ export const SUPPORTED_LANGUAGES = [
   { code: 'ja', label: '日本語', flag: '🇯🇵' },
   { code: 'ko', label: '한국어', flag: '🇰🇷' }
 ];
+
+function decodeHtmlEntities(str) {
+  if (!str || typeof str !== 'string') return '';
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&#x2F;/g, '/')
+    .replace(/&#x60;/g, '`');
+}
 
 function isErrorString(str) {
   if (!str || typeof str !== 'string') return true;
@@ -35,10 +49,10 @@ async function fetchGoogleGtx(text, targetLang) {
   if (!Array.isArray(data) || !Array.isArray(data[0])) throw new Error('Invalid format');
   const translated = data[0].map((item) => item[0]).join('');
   if (isErrorString(translated)) throw new Error('Error string detected');
-  return translated;
+  return decodeHtmlEntities(translated.trim());
 }
 
-// Gateway 2: Google Dict API (muito estável e permissiva)
+// Gateway 2: Google Dict API
 async function fetchGoogleDict(text, targetLang) {
   const url = `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=auto&tl=${encodeURIComponent(targetLang)}&q=${encodeURIComponent(text)}`;
   const res = await fetch(url);
@@ -51,10 +65,10 @@ async function fetchGoogleDict(text, targetLang) {
     translated = data;
   }
   if (isErrorString(translated)) throw new Error('Error string detected');
-  return translated;
+  return decodeHtmlEntities(translated.trim());
 }
 
-// Gateway 3: MyMemory (com limite rigoroso de 300 caracteres para NUNCA estourar 500 chars)
+// Gateway 3: MyMemory
 async function fetchMyMemory(text, targetLang) {
   if (text.length > 350) throw new Error('Query too large for MyMemory');
   const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=auto|${encodeURIComponent(targetLang)}`;
@@ -63,52 +77,111 @@ async function fetchMyMemory(text, targetLang) {
   const data = await res.json();
   const translated = data?.responseData?.translatedText;
   if (!translated || isErrorString(translated)) throw new Error('MyMemory invalid response');
-  return translated;
+  return decodeHtmlEntities(translated.trim());
 }
 
-// Traduz um lote de texto seguro (< 300 caracteres) tentando os múltiplos gateways
-async function translateChunkWithFallbacks(text, targetLang) {
-  if (!text || text.trim() === '♪' || !text.trim()) return text;
+/**
+ * Traduz um único verso individualmente testando múltiplos gateways em cascata.
+ */
+async function translateSingleLineWithFallbacks(text, targetLang) {
+  const trimmed = (text || '').trim();
+  if (!trimmed || trimmed === '♪' || /^\[.*\]$/.test(trimmed)) {
+    return text;
+  }
 
-  // 1. Tenta Google GTX
+  const cacheKey = `${trimmed}___${targetLang}`;
+  if (clientVerseCache.has(cacheKey)) {
+    return clientVerseCache.get(cacheKey);
+  }
+
+  // 1. Google GTX
   try {
-    const res = await fetchGoogleGtx(text, targetLang);
-    if (res) return res;
+    const res = await fetchGoogleGtx(trimmed, targetLang);
+    if (res) {
+      clientVerseCache.set(cacheKey, res);
+      return res;
+    }
   } catch {}
 
-  // 2. Tenta Google Dict
+  // 2. Google Dict
   try {
-    const res = await fetchGoogleDict(text, targetLang);
-    if (res) return res;
+    const res = await fetchGoogleDict(trimmed, targetLang);
+    if (res) {
+      clientVerseCache.set(cacheKey, res);
+      return res;
+    }
   } catch {}
 
-  // 3. Tenta MyMemory (apenas para trechos pequenos)
-  if (text.length <= 350) {
+  // 3. MyMemory (para versos curtos)
+  if (trimmed.length <= 350) {
     try {
-      const res = await fetchMyMemory(text, targetLang);
-      if (res) return res;
+      const res = await fetchMyMemory(trimmed, targetLang);
+      if (res) {
+        clientVerseCache.set(cacheKey, res);
+        return res;
+      }
     } catch {}
   }
 
-  // Fallback: retorna o texto original se nenhum gateway responder
   return text;
 }
 
 /**
- * Traduz versos sincronizados sem nunca exceder o limite de caracteres.
- * Agrupa versos em lotes pequenos (máximo 250 caracteres por requisição).
+ * Motor concorrente que traduz estritamente linha a linha sem pular versos.
+ */
+async function clientTranslateLinesLineByLine(rawLines, targetLang, concurrency = 8) {
+  const uniqueVerses = Array.from(new Set(rawLines.map((l) => (l || '').trim()))).filter(
+    (l) => l && l !== '♪' && !/^\[.*\]$/.test(l)
+  );
+
+  const lineMap = new Map();
+  let index = 0;
+  let active = 0;
+
+  await new Promise((resolve) => {
+    function dispatch() {
+      if (index >= uniqueVerses.length && active === 0) return resolve();
+      while (active < concurrency && index < uniqueVerses.length) {
+        const item = uniqueVerses[index++];
+        active++;
+        translateSingleLineWithFallbacks(item, targetLang)
+          .then((translated) => {
+            lineMap.set(item, translated);
+            active--;
+            dispatch();
+          })
+          .catch(() => {
+            lineMap.set(item, item);
+            active--;
+            dispatch();
+          });
+      }
+    }
+    dispatch();
+  });
+
+  return rawLines.map((line) => {
+    const trimmed = (line || '').trim();
+    if (!trimmed || trimmed === '♪' || /^\[.*\]$/.test(trimmed)) return line;
+    return lineMap.get(trimmed) || line;
+  });
+}
+
+/**
+ * Traduz versos sincronizados linha a linha com preservação 100% de marcações e tempos.
  */
 export async function translateSyncedLyrics(lines, targetLang = 'pt', trackId = '') {
   if (!lines || lines.length === 0) return [];
 
   const cacheKey = `synced_${trackId || lines[0]?.text || ''}_${targetLang}`;
-  if (translationCache.has(cacheKey)) {
-    return translationCache.get(cacheKey);
+  if (songTranslationCache.has(cacheKey)) {
+    return songTranslationCache.get(cacheKey);
   }
 
-  // 1. Tenta API interna primeiro
+  const rawTexts = lines.map((l) => l.text || '');
+
+  // 1. Tenta API interna primeiro (executa em paralelo no servidor com alta performance)
   try {
-    const rawTexts = lines.map((l) => l.text);
     const apiRes = await fetch('/api/translate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -118,7 +191,6 @@ export async function translateSyncedLyrics(lines, targetLang = 'pt', trackId = 
     if (apiRes.ok) {
       const data = await apiRes.json();
       if (Array.isArray(data.lines) && data.lines.length === lines.length) {
-        // Valida se não veio com mensagem de erro
         const hasError = data.lines.some((l) => isErrorString(l));
         if (!hasError) {
           const result = lines.map((line, idx) => ({
@@ -126,104 +198,59 @@ export async function translateSyncedLyrics(lines, targetLang = 'pt', trackId = 
             text: data.lines[idx] || line.text,
             originalText: line.text
           }));
-          translationCache.set(cacheKey, result);
+          songTranslationCache.set(cacheKey, result);
           return result;
         }
       }
     }
   } catch {}
 
-  // 2. Divisão em lotes estritamente seguros (<= 250 caracteres por lote)
-  const batches = [];
-  let currentBatch = [];
-  let currentChars = 0;
-
-  for (let i = 0; i < lines.length; i++) {
-    const text = (lines[i].text || '').trim();
-    if (currentChars + text.length + 1 > 250 && currentBatch.length > 0) {
-      batches.push(currentBatch);
-      currentBatch = [{ text, index: i }];
-      currentChars = text.length;
-    } else {
-      currentBatch.push({ text, index: i });
-      currentChars += text.length + 1;
-    }
-  }
-  if (currentBatch.length > 0) {
-    batches.push(currentBatch);
-  }
-
-  const translatedLinesArray = new Array(lines.length);
-
-  for (const batch of batches) {
-    const combinedText = batch.map((item) => item.text).join('\n');
-    let translatedCombined = '';
-
-    try {
-      translatedCombined = await translateChunkWithFallbacks(combinedText, targetLang);
-    } catch {
-      translatedCombined = combinedText;
-    }
-
-    const split = translatedCombined.split('\n');
-    for (let j = 0; j < batch.length; j++) {
-      const originalIdx = batch[j].index;
-      const transText = split[j]?.trim();
-      translatedLinesArray[originalIdx] = (transText && !isErrorString(transText)) ? transText : batch[j].text;
-    }
-  }
-
+  // 2. Fallback de cliente: tradução concorrente linha a linha
+  const translatedTexts = await clientTranslateLinesLineByLine(rawTexts, targetLang, 8);
   const result = lines.map((line, idx) => ({
     time: line.time,
-    text: translatedLinesArray[idx] || line.text,
+    text: translatedTexts[idx] || line.text,
     originalText: line.text
   }));
 
-  translationCache.set(cacheKey, result);
+  songTranslationCache.set(cacheKey, result);
   return result;
 }
 
 /**
- * Traduz texto estático de letra dividindo em parágrafos seguros (<= 250 chars).
+ * Traduz texto estático de letra linha a linha mantendo parágrafos e pontuação intactos.
  */
 export async function translatePlainLyrics(plainText, targetLang = 'pt', trackId = '') {
   if (!plainText) return '';
 
   const cacheKey = `plain_${trackId || plainText.slice(0, 30)}_${targetLang}`;
-  if (translationCache.has(cacheKey)) {
-    return translationCache.get(cacheKey);
+  if (songTranslationCache.has(cacheKey)) {
+    return songTranslationCache.get(cacheKey);
   }
 
   const lines = plainText.split('\n');
-  const batches = [];
-  let currentBatch = [];
-  let currentChars = 0;
 
-  for (const line of lines) {
-    const text = line.trim();
-    if (currentChars + text.length + 1 > 250 && currentBatch.length > 0) {
-      batches.push(currentBatch);
-      currentBatch = [text];
-      currentChars = text.length;
-    } else {
-      currentBatch.push(text);
-      currentChars += text.length + 1;
+  // 1. Tenta API interna
+  try {
+    const apiRes = await fetch('/api/translate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lines, target: targetLang })
+    });
+
+    if (apiRes.ok) {
+      const data = await apiRes.json();
+      if (Array.isArray(data.lines) && data.lines.length === lines.length) {
+        const joined = data.lines.join('\n');
+        songTranslationCache.set(cacheKey, joined);
+        return joined;
+      }
     }
-  }
-  if (currentBatch.length > 0) batches.push(currentBatch);
+  } catch {}
 
-  const translatedBatches = [];
-  for (const batch of batches) {
-    const combined = batch.join('\n');
-    try {
-      const trans = await translateChunkWithFallbacks(combined, targetLang);
-      translatedBatches.push(trans);
-    } catch {
-      translatedBatches.push(combined);
-    }
-  }
-
-  const result = translatedBatches.join('\n');
-  translationCache.set(cacheKey, result);
-  return result;
+  // 2. Fallback de cliente
+  const translatedLines = await clientTranslateLinesLineByLine(lines, targetLang, 8);
+  const joined = translatedLines.join('\n');
+  songTranslationCache.set(cacheKey, joined);
+  return joined;
 }

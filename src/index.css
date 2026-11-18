@@ -61,9 +61,46 @@ body {
   .better-lyrics-line { transition-duration: 0.01ms; }
   .better-lyrics-shader-orb-1,
   .better-lyrics-shader-orb-2,
-  .better-lyrics-shader-pulse {
+  .better-lyrics-shader-pulse,
+  .album-backdrop-spinning,
+  .album-backdrop-spinning-reverse {
     animation: none !important;
   }
+}
+
+/* Fundo Dinâmico: Capa do Álbum girando em ultra-blur com cores interativas */
+@keyframes albumBackdropSpin {
+  0% {
+    transform: translate(-50%, -50%) rotate(0deg) scale(1.15);
+  }
+  50% {
+    transform: translate(-50%, -50%) rotate(180deg) scale(1.3);
+  }
+  100% {
+    transform: translate(-50%, -50%) rotate(360deg) scale(1.15);
+  }
+}
+
+@keyframes albumBackdropSpinReverse {
+  0% {
+    transform: translate(-50%, -50%) rotate(360deg) scale(1.25);
+  }
+  50% {
+    transform: translate(-50%, -50%) rotate(180deg) scale(1.1);
+  }
+  100% {
+    transform: translate(-50%, -50%) rotate(0deg) scale(1.25);
+  }
+}
+
+.album-backdrop-spinning {
+  animation: albumBackdropSpin 50s linear infinite;
+  will-change: transform;
+}
+
+.album-backdrop-spinning-reverse {
+  animation: albumBackdropSpinReverse 70s linear infinite;
+  will-change: transform;
 }
 
 /* Better Lyrics Ambient Fluid Shader Animations */

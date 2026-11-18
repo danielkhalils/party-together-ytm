@@ -427,35 +427,29 @@ function AlbumBackdrop({ src }) {
             className="hidden"
           />
 
-          {/* Camada 1: Mesh base em ultra-blur com saturação e contraste no estilo Better Lyrics */}
+          {/* Camada 1: Capa do álbum em ultra-blur girando no fundo gerando cores vivas */}
           <div
-            className="absolute inset-[-30%] w-[160%] h-[160%] bg-cover bg-center blur-[100px] brightness-[0.7] saturate-[200%] contrast-[115%] transform scale-110"
+            className="album-backdrop-spinning absolute top-1/2 left-1/2 w-[160vmax] h-[160vmax] max-w-none max-h-none rounded-full bg-cover bg-center blur-[85px] brightness-[0.7] saturate-[220%] contrast-[110%]"
             style={{ backgroundImage: `url(${layer.src})` }}
           />
 
-          {/* Camada 2: Fluid Shader Orb 1 (Orb dinâmico no topo-esquerdo que flutua e respira) */}
+          {/* Camada 2: Segunda camada girando em sentido contrário com rotação e blend interativo */}
           <div
-            className="better-lyrics-shader-orb-1 absolute -top-[15%] -left-[15%] w-[75vw] h-[75vw] max-w-[900px] max-h-[900px] rounded-full bg-cover bg-center blur-[120px] opacity-75 mix-blend-screen"
+            className="album-backdrop-spinning-reverse absolute top-1/2 left-1/2 w-[150vmax] h-[150vmax] max-w-none max-h-none rounded-full bg-cover bg-center blur-[115px] opacity-65 mix-blend-screen brightness-[0.75] saturate-[250%]"
             style={{ backgroundImage: `url(${layer.src})` }}
           />
 
-          {/* Camada 3: Fluid Shader Orb 2 (Orb dinâmico na base-direita com rotação contrária) */}
+          {/* Camada 3: Pulso sutil de aura central */}
           <div
-            className="better-lyrics-shader-orb-2 absolute -bottom-[15%] -right-[15%] w-[70vw] h-[70vw] max-w-[850px] max-h-[850px] rounded-full bg-cover bg-center blur-[110px] opacity-70 mix-blend-screen"
-            style={{ backgroundImage: `url(${layer.src})` }}
-          />
-
-          {/* Camada 4: Pulsar central de aura (iluminação ambiente viva do Better Lyrics) */}
-          <div
-            className="better-lyrics-shader-pulse absolute top-1/2 left-1/2 w-[60vw] h-[60vw] max-w-[700px] max-h-[700px] rounded-full bg-cover bg-center blur-[130px] opacity-50 mix-blend-color-dodge"
+            className="better-lyrics-shader-pulse absolute top-1/2 left-1/2 w-[80vw] h-[80vw] max-w-[850px] max-h-[850px] rounded-full bg-cover bg-center blur-[130px] opacity-35 mix-blend-color-dodge"
             style={{ backgroundImage: `url(${layer.src})` }}
           />
         </div>
       ))}
 
-      {/* Camada 5: Vinheta e ambient shading escuro para manter textos e letras 100% legíveis */}
-      <div className="absolute inset-0 bg-radial from-transparent via-zinc-950/50 to-zinc-950/85 pointer-events-none" />
-      <div className="absolute inset-0 bg-gradient-to-t from-zinc-950/90 via-transparent to-zinc-950/70 pointer-events-none" />
+      {/* Camada 4: Vinheta e ambient shading escuro para contraste perfeito dos cards e letras */}
+      <div className="absolute inset-0 bg-radial from-transparent via-zinc-950/45 to-zinc-950/85 pointer-events-none" />
+      <div className="absolute inset-0 bg-zinc-950/35 pointer-events-none" />
     </div>
   );
 }
@@ -3733,12 +3727,12 @@ export default function App() {
   // TELA 2: SALA ATIVA (PLAYER SINCRONIZADO + BETTERLYRICS + BUSCA YT MUSIC)
   // ============================================================================
   return (
-    <div className="min-h-screen bg-zinc-950 text-white flex flex-col relative overflow-hidden">
+    <div className="min-h-screen lg:h-screen lg:max-h-screen bg-zinc-950 text-white flex flex-col relative overflow-x-hidden lg:overflow-hidden">
       {/* Capa do álbum desfocada; troca com crossfade quando a faixa muda. */}
       <AlbumBackdrop src={roomState.playback.thumbnail} />
 
       {/* Cabeçalho da Sala com o Ícone Oficial */}
-      <header className="relative z-10 border-b border-zinc-800/80 bg-zinc-900/75 backdrop-blur-md px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
+      <header className="shrink-0 relative z-10 border-b border-zinc-800/80 bg-zinc-900/75 backdrop-blur-md px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <button
             type="button"
@@ -3860,10 +3854,10 @@ export default function App() {
       </header>
 
       {/* Conteúdo Principal */}
-      <main className="relative z-10 flex-1 max-w-6xl w-full mx-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <main className="relative z-10 flex-1 min-h-0 max-w-6xl w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
         {/* Coluna Esquerda: Player Sincronizado + Participantes com Avatares Fofos */}
-        <div className="lg:col-span-5 flex flex-col gap-4">
-          <div className="bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-3xl p-5 flex flex-col items-center text-center relative overflow-hidden shadow-xl">
+        <div className="lg:col-span-5 flex flex-col gap-4 min-h-0 h-full">
+          <div className="bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-3xl p-4 sm:p-5 flex flex-col items-center text-center relative overflow-y-auto shadow-xl shrink-0 max-h-[72%]">
             {/* Desbloqueio de Áudio para Convidados */}
             {!isHost && !audioUnlocked && (
               <div className="absolute inset-0 z-20 bg-zinc-950/90 backdrop-blur-md flex flex-col items-center justify-center p-6">
@@ -4076,11 +4070,11 @@ export default function App() {
           </div>
 
           {/* Lista de Participantes com Fotos Fofas Aleatórias */}
-          <div className="bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-3xl p-4 shadow-xl">
-            <h4 className="text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-3 flex items-center gap-1.5">
+          <div className="bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-3xl p-4 shadow-xl flex-1 min-h-[130px] flex flex-col overflow-hidden">
+            <h4 className="shrink-0 text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2.5 flex items-center gap-1.5">
               <Users className="w-4 h-4 text-red-500" /> Galera na Party ({(roomState.members || []).length})
             </h4>
-            <div className="flex flex-wrap gap-2.5">
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1 flex flex-wrap content-start gap-2.5">
               {(roomState.members || []).map((m) => {
                 const isSelf = m.id === userId;
                 return (
@@ -4127,7 +4121,7 @@ export default function App() {
         </div>
 
         {/* Coluna Direita: Abas (Buscar Música | Fila Colaborativa | BetterLyrics) */}
-        <div className="lg:col-span-7 flex h-[620px] min-h-0 flex-col overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900/90 p-5 shadow-xl">
+        <div className="lg:col-span-7 flex h-full min-h-[500px] lg:min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900/90 p-4 sm:p-5 shadow-xl">
           <div className="flex flex-wrap items-center justify-between border-b border-zinc-800 pb-3.5 mb-4 gap-2">
             <div className="flex flex-wrap gap-2">
               <button
