@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
-import { lookupRoomState, startRoomSync } from './services/realtimeSync.js';
+import { lookupRoomState, startRoomSync, watchRoomStatus, normalizeRoomCode } from './services/realtimeSync.js';
+import { translateSyncedLyrics, translatePlainLyrics, SUPPORTED_LANGUAGES } from './services/translateService.js';
 import {
   Play,
   Pause,
@@ -29,6 +30,9 @@ import {
   Download,
   Bell,
   BellOff,
+  BellRing,
+  Languages,
+  Radio,
   ImagePlus,
   X,
   Pencil,
@@ -179,6 +183,36 @@ function playChatMessageChime() {
     setTimeout(() => {
       try { ctx.close(); } catch {}
     }, 400);
+  } catch {}
+}
+
+function playPartyActiveChime() {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+
+    // Tríade ascendente alegre (C5 -> E5 -> G5) para alertar que a party está ativa
+    const notes = [523.25, 659.25, 783.99];
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const startTime = now + idx * 0.08;
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, startTime);
+      gain.gain.setValueAtTime(0.001, startTime);
+      gain.gain.exponentialRampToValueAtTime(0.18, startTime + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, startTime + 0.3);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(startTime);
+      osc.stop(startTime + 0.32);
+    });
+
+    setTimeout(() => {
+      try { ctx.close(); } catch {}
+    }, 800);
   } catch {}
 }
 
@@ -759,6 +793,48 @@ const SyncedLyricsList = React.memo(function SyncedLyricsList({ lines, activeInd
   previous.activeLineRef === next.activeLineRef && previous.seekRef === next.seekRef
 );
 
+const TranslatedLyricsLine = React.memo(function TranslatedLyricsLine({ line, isCurrent, isHost, activeLineRef, seekRef }) {
+  return (
+    <div
+      ref={isCurrent ? activeLineRef : null}
+      onClick={isHost ? () => seekRef.current(line.time) : undefined}
+      aria-current={isCurrent ? 'true' : undefined}
+      data-active={isCurrent ? 'true' : 'false'}
+      className={`better-lyrics-line select-none break-words px-2 py-1 transition-all duration-300 ${isHost ? 'cursor-pointer' : ''}`}
+    >
+      <p className="leading-snug">{line.text}</p>
+      {line.originalText && line.originalText !== line.text && (
+        <p className="text-xs sm:text-sm text-zinc-400 font-normal tracking-normal mt-1 opacity-75 select-text">
+          {line.originalText}
+        </p>
+      )}
+    </div>
+  );
+}, (previous, next) =>
+  previous.line === next.line && previous.isCurrent === next.isCurrent && previous.isHost === next.isHost &&
+  previous.activeLineRef === next.activeLineRef && previous.seekRef === next.seekRef
+);
+
+const SyncedTranslatedLyricsList = React.memo(function SyncedTranslatedLyricsList({ lines, activeIndex, isHost, activeLineRef, seekRef }) {
+  return (
+    <div className="better-lyrics-list mx-auto w-full max-w-2xl text-center">
+      {lines.map((line, index) => (
+        <TranslatedLyricsLine
+          key={`${line.time}-${index}`}
+          line={line}
+          isCurrent={index === activeIndex}
+          isHost={isHost}
+          activeLineRef={activeLineRef}
+          seekRef={seekRef}
+        />
+      ))}
+    </div>
+  );
+}, (previous, next) =>
+  previous.lines === next.lines && previous.activeIndex === next.activeIndex && previous.isHost === next.isHost &&
+  previous.activeLineRef === next.activeLineRef && previous.seekRef === next.seekRef
+);
+
 export default function App() {
   // Identidade e Avatar Fofo aleatório do usuário (persistidos para manter identidade do admin e convidados)
   const [userId] = useState(() => {
@@ -870,7 +946,7 @@ export default function App() {
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
 
-  // Abas: 'queue' | 'search' | 'lyrics' | 'chat'
+  // Abas: 'queue' | 'search' | 'lyrics' | 'translation' | 'chat'
   const [activeTab, setActiveTab] = useState('search');
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [isChatMuted, setIsChatMuted] = useState(() => {
@@ -922,6 +998,28 @@ export default function App() {
     plain: '',
     error: null
   });
+
+  // Estados do BetterLyrics — Tradução de Letras
+  const [translationData, setTranslationData] = useState({
+    loading: false,
+    synced: [],
+    plain: '',
+    error: null,
+    targetLang: 'pt'
+  });
+  const translationContainerRef = useRef(null);
+  const activeTranslationLyricRef = useRef(null);
+
+  // Monitoramento da Party Anterior (Online e Tocando Música)
+  const [previousPartyStatus, setPreviousPartyStatus] = useState(null);
+  const [partyNotificationsEnabled, setPartyNotificationsEnabled] = useState(() => {
+    try {
+      return localStorage.getItem('party_active_notifications_enabled') !== 'false';
+    } catch {
+      return true;
+    }
+  });
+  const prevActiveRef = useRef(false);
 
   const playerRef = useRef(null);
   const ytApiReady = useRef(false);
@@ -981,6 +1079,90 @@ export default function App() {
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
     return () => window.removeEventListener('beforeinstallprompt', onInstallAvailable);
   }, []);
+
+  const handleToggleDesktopNotifications = async () => {
+    if (!('Notification' in window)) return;
+    if (Notification.permission === 'default') {
+      const res = await Notification.requestPermission();
+      if (res === 'granted') {
+        setPartyNotificationsEnabled(true);
+        try {
+          localStorage.setItem('party_active_notifications_enabled', 'true');
+        } catch {}
+      }
+    } else {
+      const next = !partyNotificationsEnabled;
+      setPartyNotificationsEnabled(next);
+      try {
+        localStorage.setItem('party_active_notifications_enabled', String(next));
+      } catch {}
+    }
+  };
+
+  const handleJoinPreviousPartyDirect = (statusToJoin) => {
+    const targetRoomId = statusToJoin?.roomId || lastRoomInfo?.roomId;
+    const targetPin = statusToJoin?.pinCode || lastRoomInfo?.pinCode || '1234';
+    if (!targetRoomId) return;
+
+    setMode('join');
+    setRoomCodeInput(targetRoomId);
+    setPinInput(targetPin);
+    if (lastRoomInfo?.username) handleUsernameChange(lastRoomInfo.username);
+
+    setTimeout(() => {
+      const formEl = document.querySelector('form');
+      if (formEl) {
+        if (typeof formEl.requestSubmit === 'function') {
+          formEl.requestSubmit();
+        } else {
+          formEl.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+        }
+      }
+    }, 60);
+  };
+
+  // Monitora em background a última party que o usuário entrou e saiu
+  useEffect(() => {
+    if (inRoom || !lastRoomInfo?.roomId) {
+      setPreviousPartyStatus(null);
+      return;
+    }
+
+    const unwatch = watchRoomStatus({
+      roomId: lastRoomInfo.roomId,
+      onStatusChange: (status) => {
+        setPreviousPartyStatus(status);
+
+        // Se a party anterior está online e alguém está ouvindo música agora
+        if (status.isActive && !prevActiveRef.current) {
+          prevActiveRef.current = true;
+          playPartyActiveChime();
+
+          // Notificação de desktop no navegador se autorizada
+          if (partyNotificationsEnabled && 'Notification' in window && Notification.permission === 'granted') {
+            try {
+              const notif = new Notification(`Party "${status.roomName || 'Party'}" está tocando!`, {
+                body: `Tocando: "${status.playback.title || 'Música'}" de ${status.playback.artist || 'Artista'} (${status.memberCount} pessoa${status.memberCount === 1 ? '' : 's'} ouvindo). Clique para retornar!`,
+                icon: '/icons/app-icon-192.png'
+              });
+              notif.onclick = () => {
+                window.focus();
+                handleJoinPreviousPartyDirect(status);
+                notif.close();
+              };
+            } catch {}
+          }
+        } else if (!status.isActive) {
+          prevActiveRef.current = false;
+        }
+      }
+    });
+
+    return () => {
+      unwatch();
+      prevActiveRef.current = false;
+    };
+  }, [inRoom, lastRoomInfo?.roomId, partyNotificationsEnabled]);
 
   // 2. Carrega a API oficial de IFrame do YouTube
   useEffect(() => {
@@ -1315,6 +1497,14 @@ export default function App() {
         memberHistory: updatedHistory,
         playback: reconcileSkipVotes(currentRoom.playback, updatedMembers)
       });
+    } else if (action.type === 'USER_RETURNED_CLEAR_CACHE') {
+      // Quando um usuário retorna à party da qual havia saído, a lista de músicas e o chat devem estar limpos, evitando cache
+      broadcastRoomState({
+        ...currentRoom,
+        chat: [],
+        queue: [],
+        playlist: []
+      });
     } else if (action.type === 'USER_HEARTBEAT') {
       const members = currentRoom.members || [];
       if (!members.some((member) => member.id === action.userId)) return;
@@ -1528,6 +1718,72 @@ export default function App() {
       isCancelled = true;
     };
   }, [roomState?.playback?.videoId]);
+
+  // 5b. Tradução automática das Letras obtidas do BetterLyrics
+  useEffect(() => {
+    const currentVideoId = roomState?.playback?.videoId;
+    if (!currentVideoId || (!lyricsData.synced.length && !lyricsData.plain)) {
+      setTranslationData((prev) => ({
+        ...prev,
+        loading: false,
+        synced: [],
+        plain: '',
+        error: null
+      }));
+      return;
+    }
+
+    let isCancelled = false;
+
+    async function doTranslateLyrics() {
+      setTranslationData((prev) => ({ ...prev, loading: true, error: null }));
+      try {
+        if (lyricsData.synced.length > 0) {
+          const translated = await translateSyncedLyrics(
+            lyricsData.synced,
+            translationData.targetLang,
+            currentVideoId
+          );
+          if (isCancelled) return;
+          setTranslationData((prev) => ({
+            ...prev,
+            loading: false,
+            synced: translated,
+            plain: '',
+            error: null
+          }));
+        } else if (lyricsData.plain) {
+          const translatedPlain = await translatePlainLyrics(
+            lyricsData.plain,
+            translationData.targetLang,
+            currentVideoId
+          );
+          if (isCancelled) return;
+          setTranslationData((prev) => ({
+            ...prev,
+            loading: false,
+            synced: [],
+            plain: translatedPlain,
+            error: null
+          }));
+        }
+      } catch {
+        if (!isCancelled) {
+          setTranslationData((prev) => ({
+            ...prev,
+            loading: false,
+            error: 'Não foi possível traduzir a letra no momento.'
+          }));
+        }
+      }
+    }
+
+    doTranslateLyrics();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [roomState?.playback?.videoId, lyricsData.synced, lyricsData.plain, translationData.targetLang]);
 
   // 6. Inicializa ou atualiza o Player do YouTube quando há uma música ativa na sala
   useEffect(() => {
@@ -1865,11 +2121,12 @@ export default function App() {
 
   // Smoothly scroll only the lyrics viewport; cancel the previous movement on a new line.
   useEffect(() => {
-    const container = lyricsContainerRef.current;
-    const activeLine = activeLyricRef.current;
+    const isTranslation = activeTab === 'translation';
+    const container = isTranslation ? translationContainerRef.current : lyricsContainerRef.current;
+    const activeLine = isTranslation ? activeTranslationLyricRef.current : activeLyricRef.current;
     if (lyricScrollFrameRef.current) cancelAnimationFrame(lyricScrollFrameRef.current);
     lyricScrollFrameRef.current = null;
-    if (activeTab !== 'lyrics' || activeLyricIndex < 0 || !container || !activeLine) return;
+    if ((activeTab !== 'lyrics' && activeTab !== 'translation') || activeLyricIndex < 0 || !container || !activeLine) return;
 
     const containerRect = container.getBoundingClientRect();
     const lineRect = activeLine.getBoundingClientRect();
@@ -2101,6 +2358,16 @@ export default function App() {
     setErrorMsg('');
 
     try {
+      const cleanCode = normalizeRoomCode(roomCodeInput);
+      const wasPreviouslyExited = Boolean(localStorage.getItem(`party_exited_${cleanCode}`));
+
+      // Se o usuário saiu anteriormente desta party, limpa cache local prévio antes de consultar
+      if (wasPreviouslyExited) {
+        try {
+          localStorage.removeItem(`party_room_${cleanCode}`);
+        } catch {}
+      }
+
       const lookupResult = await lookupRoomState(cleanCode);
 
       if (!lookupResult) {
@@ -2110,6 +2377,17 @@ export default function App() {
       }
 
       const foundRoom = lookupResult.state;
+
+      // Sempre que um usuário retornar a uma party da qual saiu, a lista de músicas e o chat devem estar limpos, evitando cache
+      if (wasPreviouslyExited) {
+        foundRoom.chat = [];
+        foundRoom.queue = [];
+        foundRoom.playlist = [];
+        try {
+          localStorage.removeItem(`party_exited_${cleanCode}`);
+          localStorage.removeItem(`party_room_${cleanCode}`);
+        } catch {}
+      }
 
       if (foundRoom.pinCode && foundRoom.pinCode !== pinInput.trim()) {
         setErrorMsg('Código PIN incorreto para esta sala.');
@@ -2205,6 +2483,9 @@ export default function App() {
 
       const updatedRoom = ensureMemberChatColors(ensureRoomPlaylist({
         ...foundRoom,
+        chat: wasPreviouslyExited ? [] : foundRoom.chat,
+        queue: wasPreviouslyExited ? [] : foundRoom.queue,
+        playlist: wasPreviouslyExited ? [] : foundRoom.playlist,
         members: updatedMembers,
         memberHistory: updatedHistory,
         playback: reconcileSkipVotes(foundRoom.playback, updatedMembers)
@@ -2216,6 +2497,14 @@ export default function App() {
       try {
         localStorage.setItem(`party_room_${cleanCode}`, JSON.stringify(updatedRoom));
       } catch {}
+
+      if (wasPreviouslyExited) {
+        if (isAdmin) {
+          syncServiceRef.current?.broadcastState?.(updatedRoom);
+        } else {
+          syncServiceRef.current?.sendAction?.({ type: 'USER_RETURNED_CLEAR_CACHE', userId });
+        }
+      }
 
       setRoomState(updatedRoom);
       setInRoom(true);
@@ -2589,6 +2878,7 @@ export default function App() {
   const leaveRoom = () => {
     const currentRoom = roomStateRef.current;
     if (currentRoom) {
+      const cleanId = normalizeRoomCode(currentRoom.roomId);
       const lastInfo = {
         roomId: currentRoom.roomId,
         roomName: currentRoom.roomName,
@@ -2599,6 +2889,10 @@ export default function App() {
       };
       try {
         localStorage.setItem('party_last_room', JSON.stringify(lastInfo));
+        // Remove cache local da sala para garantir que o chat e fila sejam renovados ao retornar
+        localStorage.removeItem(`party_room_${cleanId}`);
+        // Registra que o usuário saiu da sala para evitar qualquer cache residual
+        localStorage.setItem(`party_exited_${cleanId}`, String(Date.now()));
       } catch {}
       setLastRoomInfo(lastInfo);
     }
@@ -2624,6 +2918,11 @@ export default function App() {
     syncServiceRef.current?.destroy();
     syncServiceRef.current = null;
     setInRoom(false);
+    setRoomState(null);
+    setLyricsData({ loading: false, synced: [], plain: '', error: null });
+    setTranslationData({ loading: false, synced: [], plain: '', error: null, targetLang: 'pt' });
+    setChatInput('');
+    setUnreadChatCount(0);
     joinedRoomConfirmedRef.current = false;
     setRoomBrokerIndex(null);
     if (playerRef.current) {
@@ -2992,8 +3291,74 @@ export default function App() {
             </div>
           )}
 
-          {/* Atalho para Voltar à Última Sala Visitada */}
-          {lastRoomInfo && lastRoomInfo.roomId && (
+          {/* Notificação em Tempo Real da Party Anterior Ativa (Online & Alguém Ouvindo Música) */}
+          {previousPartyStatus?.isActive ? (
+            <div className="mb-5 p-4 rounded-2xl bg-gradient-to-r from-emerald-950/80 via-zinc-950/90 to-red-950/80 border-2 border-emerald-500/70 shadow-2xl shadow-emerald-950/50 relative overflow-hidden">
+              <div className="absolute top-0 right-0 transform translate-x-4 -translate-y-4 w-32 h-32 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none" />
+
+              <div className="flex items-center justify-between gap-2 relative z-10 mb-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="relative flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                  </span>
+                  <span className="text-[11px] uppercase font-black text-emerald-400 tracking-wider flex items-center gap-1.5">
+                    <Radio className="w-3.5 h-3.5 animate-spin text-emerald-400" style={{ animationDuration: '3s' }} />
+                    Sua Party Anterior está Online & Tocando!
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleToggleDesktopNotifications}
+                  className="text-[10px] text-zinc-300 hover:text-white transition flex items-center gap-1 bg-zinc-900/90 px-2 py-1 rounded-lg border border-zinc-700/80 cursor-pointer"
+                  title="Ativar/desativar notificações do navegador"
+                >
+                  {partyNotificationsEnabled ? <BellRing className="w-3 h-3 text-emerald-400" /> : <BellOff className="w-3 h-3 text-zinc-500" />}
+                  {partyNotificationsEnabled ? 'Notificações Ativas' : 'Ativar Notificações'}
+                </button>
+              </div>
+
+              <div className="flex items-center gap-3 bg-black/50 p-2.5 rounded-xl border border-white/10 mb-3 relative z-10">
+                {previousPartyStatus.playback?.thumbnail ? (
+                  <img
+                    src={previousPartyStatus.playback.thumbnail}
+                    alt={previousPartyStatus.playback.title}
+                    className="w-12 h-12 rounded-lg object-cover border border-zinc-700/80 shrink-0"
+                  />
+                ) : (
+                  <div className="w-12 h-12 rounded-lg bg-zinc-800 flex items-center justify-center shrink-0">
+                    <Disc3 className="w-6 h-6 text-emerald-400 animate-spin" />
+                  </div>
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs font-bold text-white truncate">
+                    {previousPartyStatus.playback?.title || 'Música ao vivo'}
+                  </p>
+                  <p className="text-[11px] text-zinc-400 truncate">
+                    {previousPartyStatus.playback?.artist || previousPartyStatus.roomName}
+                  </p>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-[10px] text-emerald-400 font-semibold flex items-center gap-1">
+                      <Users className="w-3 h-3" /> {previousPartyStatus.memberCount} pessoa{previousPartyStatus.memberCount === 1 ? '' : 's'} ouvindo
+                    </span>
+                    <span className="text-zinc-600 text-[10px]">•</span>
+                    <span className="text-[10px] text-zinc-400 truncate">
+                      {previousPartyStatus.roomName} ({previousPartyStatus.roomId})
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleJoinPreviousPartyDirect(previousPartyStatus)}
+                className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-500 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs shadow-lg shadow-emerald-600/30 transition transform active:scale-[0.98] cursor-pointer flex items-center justify-center gap-2"
+              >
+                <Play className="w-4 h-4 fill-white" />
+                Retornar e Entrar na Party Agora
+              </button>
+            </div>
+          ) : lastRoomInfo && lastRoomInfo.roomId ? (
             <div className="mb-4 p-3 rounded-2xl bg-zinc-950/80 border border-zinc-800 flex items-center justify-between gap-3 shadow-inner">
               <div className="min-w-0">
                 <span className="text-[10px] uppercase font-bold text-amber-400 tracking-wider block">
@@ -3021,7 +3386,7 @@ export default function App() {
                 Usar dados
               </button>
             </div>
-          )}
+          ) : null}
 
           {/* Alternador Criar vs Entrar */}
           <div className="grid grid-cols-2 gap-2 p-1 bg-zinc-950/90 rounded-xl mb-5 border border-zinc-800">
@@ -3615,12 +3980,23 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActiveTab('lyrics')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'lyrics'
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'lyrics'
                   ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white shadow-md shadow-red-600/20'
                   : 'bg-zinc-950 text-zinc-400 hover:text-white'
                   }`}
               >
                 <Mic2 className="w-3.5 h-3.5" /> Letra (BetterLyrics)
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('translation')}
+                className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'translation'
+                  ? 'bg-gradient-to-r from-amber-600 to-rose-600 text-white shadow-md shadow-amber-600/20'
+                  : 'bg-zinc-950 text-zinc-400 hover:text-white'
+                  }`}
+              >
+                <Languages className="w-3.5 h-3.5 text-amber-300" /> Tradução (BetterLyrics)
               </button>
               <button
                 type="button"
@@ -3827,6 +4203,65 @@ export default function App() {
                 <div className="text-center py-16 text-zinc-500">
                   <Mic2 className="w-8 h-8 mx-auto mb-2 opacity-40" />
                   <p className="text-sm">{lyricsData.error || 'Letra não encontrada para esta faixa.'}</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ABA 4: TRADUÇÃO DE LETRAS SINCRONIZADAS VIA BETTERLYRICS */}
+          {activeTab === 'translation' && (
+            <div
+              ref={translationContainerRef}
+              className="better-lyrics-scroll-area min-h-0 flex-1 overflow-y-auto overflow-x-hidden rounded-2xl border border-zinc-800/70 bg-gradient-to-b from-zinc-950/90 via-zinc-950/60 to-zinc-950/90 px-4 sm:px-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden relative"
+            >
+              {/* Barra de Seleção de Idioma para a Tradução */}
+              <div className="sticky top-2 z-20 mx-auto max-w-sm my-2 flex items-center justify-between gap-2 p-2 rounded-xl bg-zinc-900/90 backdrop-blur border border-zinc-800 shadow-lg">
+                <div className="flex items-center gap-1.5 text-xs font-bold text-zinc-300">
+                  <Languages className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Idioma de tradução:</span>
+                </div>
+                <select
+                  value={translationData.targetLang}
+                  onChange={(e) => setTranslationData((prev) => ({ ...prev, targetLang: e.target.value }))}
+                  className="bg-zinc-800 border border-zinc-700 text-zinc-200 text-xs rounded-lg px-2.5 py-1 focus:outline-none focus:border-amber-500 cursor-pointer font-medium"
+                >
+                  {SUPPORTED_LANGUAGES.map((lang) => (
+                    <option key={lang.code} value={lang.code}>
+                      {lang.flag} {lang.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {!roomState.playback.videoId ? (
+                <div className="text-center py-16 text-zinc-500 flex flex-col items-center">
+                  <Languages className="w-10 h-10 mb-2 opacity-40 text-amber-400" />
+                  <p className="text-sm">Escolha uma música para ver a tradução da letra aqui!</p>
+                </div>
+              ) : lyricsData.loading || translationData.loading ? (
+                <div className="text-center py-16 text-zinc-400 flex flex-col items-center gap-3">
+                  <Disc3 className="w-7 h-7 text-amber-500 animate-spin" />
+                  <span className="text-sm">Traduzindo letra via BetterLyrics para &ldquo;{roomState.playback.title}&rdquo;...</span>
+                </div>
+              ) : translationData.synced.length > 0 ? (
+                <SyncedTranslatedLyricsList
+                  lines={translationData.synced}
+                  activeIndex={activeLyricIndex}
+                  isHost={isHost}
+                  activeLineRef={activeTranslationLyricRef}
+                  seekRef={seekLyricRef}
+                />
+              ) : translationData.plain ? (
+                <div className="better-lyrics-plain mx-auto max-w-2xl whitespace-pre-line break-words px-4 text-center">
+                  <div className="mb-4 text-xs text-amber-400/90 bg-amber-950/40 border border-amber-800/50 rounded-xl px-3 py-2">
+                    Tradução estática da letra (esta faixa não possui marcação de tempo):
+                  </div>
+                  {translationData.plain}
+                </div>
+              ) : (
+                <div className="text-center py-16 text-zinc-500">
+                  <Languages className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                  <p className="text-sm">{translationData.error || lyricsData.error || 'Tradução não disponível para esta música.'}</p>
                 </div>
               )}
             </div>

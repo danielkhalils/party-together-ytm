@@ -33,13 +33,17 @@ export async function lookupRoomState(roomId, timeoutMs = 5000) {
   const cleanId = normalizeRoomCode(roomId);
   if (!cleanId) return null;
 
-  // 1. Verificação instantânea no armazenamento local (mesmo navegador)
+  // 1. Verificação instantânea no armazenamento local (mesmo navegador),
+  // ignorando caso o usuário tenha saído recentemente para evitar carregar cache desatualizado.
   try {
-    const localRaw = localStorage.getItem(`party_room_${cleanId}`);
-    if (localRaw) {
-      const parsed = JSON.parse(localRaw);
-      if (parsed && parsed.roomId === cleanId && !parsed.closedAt) {
-        return { state: parsed, brokerIndex: null };
+    const wasExited = Boolean(localStorage.getItem(`party_exited_${cleanId}`));
+    if (!wasExited) {
+      const localRaw = localStorage.getItem(`party_room_${cleanId}`);
+      if (localRaw) {
+        const parsed = JSON.parse(localRaw);
+        if (parsed && parsed.roomId === cleanId && !parsed.closedAt) {
+          return { state: parsed, brokerIndex: null };
+        }
       }
     }
   } catch {
@@ -344,6 +348,132 @@ export function startRoomSync({ roomId, isHost, initialState, brokerIndex: prefe
           mqttClient.disconnect();
         } catch {}
       }
+    }
+  };
+}
+
+/**
+ * Monitora em background o status da última sala que o usuário participou e saiu.
+ * Notifica quando a sala estiver online e alguém estiver ouvindo música.
+ */
+export function watchRoomStatus({ roomId, onStatusChange }) {
+  const cleanId = normalizeRoomCode(roomId);
+  if (!cleanId) return () => {};
+
+  let isDestroyed = false;
+  let broadcastChannel = null;
+  const clients = [];
+  let lastReportedKey = null;
+
+  function evaluateAndNotify(state) {
+    if (isDestroyed || !state) return;
+    const isClosed = Boolean(state.closedAt);
+    const members = state.members || [];
+    const playback = state.playback || {};
+    const isPlaying = Boolean(!isClosed && playback.isPlaying && playback.videoId);
+    const isOnline = Boolean(!isClosed && (members.length > 0 || isPlaying));
+    const isActive = Boolean(isOnline && isPlaying);
+
+    const reportKey = `${isActive}_${playback.videoId}_${playback.isPlaying}_${members.length}_${playback.title || ''}`;
+    if (reportKey === lastReportedKey) return;
+    lastReportedKey = reportKey;
+
+    if (onStatusChange) {
+      onStatusChange({
+        roomId: cleanId,
+        roomName: state.roomName || 'Party',
+        roomIcon: state.roomIcon || null,
+        pinCode: state.pinCode,
+        isClosed,
+        isOnline,
+        isPlaying,
+        isActive, // Online E com alguém ouvindo música
+        memberCount: members.length,
+        members,
+        playback: {
+          videoId: playback.videoId || null,
+          title: playback.title || '',
+          artist: playback.artist || '',
+          thumbnail: playback.thumbnail || '',
+          isPlaying: Boolean(playback.isPlaying),
+          trackPosition: Number(playback.trackPosition) || 0
+        }
+      });
+    }
+  }
+
+  // 1. Canal local para receber atualizações instantâneas de outras abas/sessões na mesma máquina
+  try {
+    broadcastChannel = new BroadcastChannel(`party_channel_${cleanId}`);
+    broadcastChannel.onmessage = (event) => {
+      if (isDestroyed || !event.data) return;
+      if (event.data.type === 'ROOM_STATE') {
+        evaluateAndNotify(event.data.payload);
+      }
+    };
+  } catch {}
+
+  // 2. Consulta MQTT em tempo real no tópico de estado retido da sala
+  const { state: stateTopic } = getTopicPrefix(cleanId);
+
+  BROKERS.forEach((broker, index) => {
+    let client;
+    try {
+      const clientId = `pt_watch_${Date.now()}_${index}_${Math.random().toString(36).substring(2, 7)}`;
+      client = new paho.Client(broker.host, broker.port, broker.path, clientId);
+      clients.push(client);
+
+      client.onMessageArrived = (msg) => {
+        if (isDestroyed || msg.destinationName !== stateTopic) return;
+        try {
+          const data = JSON.parse(msg.payloadString);
+          if (data && data.roomId === cleanId) {
+            evaluateAndNotify(data);
+          }
+        } catch {}
+      };
+
+      client.onConnectionLost = (resp) => {
+        if (!isDestroyed && resp.errorCode !== 0) {
+          // Reconectar suavemente após 5s
+          setTimeout(() => {
+            if (!isDestroyed && client && !client.isConnected()) {
+              try {
+                client.connect({
+                  useSSL: true,
+                  timeout: 4,
+                  onSuccess: () => client.subscribe(stateTopic)
+                });
+              } catch {}
+            }
+          }, 5000);
+        }
+      };
+
+      client.connect({
+        useSSL: true,
+        timeout: 4,
+        cleanSession: true,
+        onSuccess: () => {
+          if (!isDestroyed && client) {
+            client.subscribe(stateTopic);
+          }
+        },
+        onFailure: (err) => {
+          console.warn(`[watchRoomStatus] Não foi possível escutar broker ${broker.host}:`, err?.errorMessage);
+        }
+      });
+    } catch {}
+  });
+
+  return () => {
+    isDestroyed = true;
+    if (broadcastChannel) {
+      try { broadcastChannel.close(); } catch {}
+    }
+    while (clients.length > 0) {
+      const c = clients.pop();
+      try { c.disconnect(); } catch {}
     }
   };
 }
