@@ -39,7 +39,9 @@ import {
   ThumbsDown,
   Timer,
   RotateCcw,
-  ChevronDown
+  ChevronDown,
+  Sun,
+  Moon
 } from 'lucide-react';
 
 // Ícone Oficial Customizado da Aplicação "Party Together"
@@ -364,7 +366,7 @@ function TenorGifModal({
   );
 }
 
-function AlbumBackdrop({ src }) {
+function AlbumBackdrop({ src, theme = 'dark' }) {
   const latestSrcRef = useRef(src);
   const nextLayerIdRef = useRef(1);
   const [layers, setLayers] = useState(() => src ? [{ id: 0, src, visible: true }] : []);
@@ -393,10 +395,12 @@ function AlbumBackdrop({ src }) {
 
   if (!layers.length) {
     return (
-      <div className="pointer-events-none fixed inset-0 z-0 bg-gradient-to-br from-zinc-950 via-zinc-900 to-black overflow-hidden">
-        <div className="absolute -top-32 -left-32 w-[60vw] h-[60vw] max-w-[800px] max-h-[800px] rounded-full bg-red-600/15 blur-[120px] better-lyrics-shader-orb-1" />
-        <div className="absolute -bottom-32 -right-32 w-[55vw] h-[55vw] max-w-[750px] max-h-[750px] rounded-full bg-amber-600/15 blur-[120px] better-lyrics-shader-orb-2" />
-        <div className="absolute inset-0 bg-zinc-950/70" />
+      <div className={`pointer-events-none fixed inset-0 z-0 overflow-hidden transition-colors duration-500 ${
+        theme === 'light' ? 'bg-gradient-to-br from-zinc-100 via-zinc-200 to-zinc-50' : 'bg-gradient-to-br from-zinc-950 via-zinc-900 to-black'
+      }`}>
+        <div className="absolute -top-32 -left-32 w-[60vw] h-[60vw] max-w-[800px] max-h-[800px] rounded-full bg-red-600/15 blur-[80px] better-lyrics-shader-orb-1" />
+        <div className="absolute -bottom-32 -right-32 w-[55vw] h-[55vw] max-w-[750px] max-h-[750px] rounded-full bg-amber-600/15 blur-[80px] better-lyrics-shader-orb-2" />
+        <div className={`absolute inset-0 ${theme === 'light' ? 'bg-white/40' : 'bg-zinc-950/70'}`} />
       </div>
     );
   }
@@ -427,29 +431,38 @@ function AlbumBackdrop({ src }) {
             className="hidden"
           />
 
-          {/* Camada 1: Capa do álbum em ultra-blur girando no fundo gerando cores vivas */}
+          {/* Camada 1: Capa do álbum em ultra-blur girando no fundo gerando cores vivas com alta performance */}
           <div
-            className="album-backdrop-spinning absolute top-1/2 left-1/2 w-[160vmax] h-[160vmax] max-w-none max-h-none rounded-full bg-cover bg-center blur-[85px] brightness-[0.7] saturate-[220%] contrast-[110%]"
+            className="album-backdrop-spinning absolute top-1/2 left-1/2 w-[140vmax] h-[140vmax] max-w-none max-h-none rounded-full bg-cover bg-center blur-[45px] brightness-[0.8] saturate-[210%] contrast-[110%]"
             style={{ backgroundImage: `url(${layer.src})` }}
           />
 
-          {/* Camada 2: Segunda camada girando em sentido contrário com rotação e blend interativo */}
+          {/* Camada 2: Segunda camada girando em sentido contrário com rotação e blend interativo suave */}
           <div
-            className="album-backdrop-spinning-reverse absolute top-1/2 left-1/2 w-[150vmax] h-[150vmax] max-w-none max-h-none rounded-full bg-cover bg-center blur-[115px] opacity-65 mix-blend-screen brightness-[0.75] saturate-[250%]"
+            className="album-backdrop-spinning-reverse absolute top-1/2 left-1/2 w-[130vmax] h-[130vmax] max-w-none max-h-none rounded-full bg-cover bg-center blur-[60px] opacity-60 mix-blend-screen brightness-[0.85] saturate-[230%]"
             style={{ backgroundImage: `url(${layer.src})` }}
           />
 
-          {/* Camada 3: Pulso sutil de aura central */}
+          {/* Camada 3: Pulso sutil de aura central leve */}
           <div
-            className="better-lyrics-shader-pulse absolute top-1/2 left-1/2 w-[80vw] h-[80vw] max-w-[850px] max-h-[850px] rounded-full bg-cover bg-center blur-[130px] opacity-35 mix-blend-color-dodge"
+            className="better-lyrics-shader-pulse absolute top-1/2 left-1/2 w-[70vw] h-[70vw] max-w-[750px] max-h-[750px] rounded-full bg-cover bg-center blur-[70px] opacity-35 mix-blend-color-dodge"
             style={{ backgroundImage: `url(${layer.src})` }}
           />
         </div>
       ))}
 
-      {/* Camada 4: Vinheta e ambient shading escuro para contraste perfeito dos cards e letras */}
-      <div className="absolute inset-0 bg-radial from-transparent via-zinc-950/45 to-zinc-950/85 pointer-events-none" />
-      <div className="absolute inset-0 bg-zinc-950/35 pointer-events-none" />
+      {/* Camada 4: Vinheta e ambient shading para contraste perfeito em Dark e Light Mode */}
+      {theme === 'light' ? (
+        <>
+          <div className="absolute inset-0 bg-radial from-transparent via-white/40 to-white/85 pointer-events-none" />
+          <div className="absolute inset-0 bg-white/45 pointer-events-none" />
+        </>
+      ) : (
+        <>
+          <div className="absolute inset-0 bg-radial from-transparent via-zinc-950/45 to-zinc-950/85 pointer-events-none" />
+          <div className="absolute inset-0 bg-zinc-950/35 pointer-events-none" />
+        </>
+      )}
     </div>
   );
 }
@@ -930,6 +943,16 @@ const SyncedLyricsList = React.memo(function SyncedLyricsList({ lines, activeInd
 );
 
 const TranslatedLyricsLine = React.memo(function TranslatedLyricsLine({ line, isCurrent, isHost, activeLineRef, seekRef }) {
+  // Limpeza de segurança para garantir que nenhum sufixo 'en' ou 'pt' vazado apareça no final
+  const cleanTranslated = (line.text || '').replace(/\s*\b(en|pt|es|fr|de|it|ja|ko)\b$/i, (match, code) => {
+    const origEnds = (line.originalText || '').trim().toLowerCase().endsWith(code.toLowerCase());
+    return origEnds ? match : '';
+  }).trim();
+
+  const cleanOriginal = (line.originalText || '').replace(/\s*\b(en|pt|es|fr|de|it|ja|ko)\b$/i, (match, code) => {
+    return (line.text || '').trim().toLowerCase().endsWith(code.toLowerCase()) ? match : '';
+  }).trim();
+
   return (
     <div
       ref={isCurrent ? activeLineRef : null}
@@ -938,10 +961,10 @@ const TranslatedLyricsLine = React.memo(function TranslatedLyricsLine({ line, is
       data-active={isCurrent ? 'true' : 'false'}
       className={`better-lyrics-line select-none break-words px-2 py-1 transition-all duration-300 ${isHost ? 'cursor-pointer' : ''}`}
     >
-      <p className="leading-snug">{line.text}</p>
-      {line.originalText && line.originalText !== line.text && (
+      <p className="leading-snug">{cleanTranslated || line.text}</p>
+      {cleanOriginal && cleanOriginal !== (cleanTranslated || line.text) && (
         <p className="text-xs sm:text-sm text-zinc-400 font-normal tracking-normal mt-1 opacity-75 select-text">
-          {line.originalText}
+          {cleanOriginal}
         </p>
       )}
     </div>
@@ -1112,6 +1135,35 @@ export default function App() {
   const prevActiveTabRef = useRef(activeTab);
   const avatarInputRef = useRef(null);
   const [installPrompt, setInstallPrompt] = useState(null);
+
+  // Tema: Dark ou White (Light) mode persistido
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem('party_theme') || 'dark';
+    } catch {
+      return 'dark';
+    }
+  });
+
+  const toggleTheme = useCallback(() => {
+    setTheme((prev) => {
+      const next = prev === 'dark' ? 'light' : 'dark';
+      try {
+        localStorage.setItem('party_theme', next);
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (theme === 'light') {
+      document.documentElement.classList.add('light');
+      document.documentElement.classList.remove('dark');
+    } else {
+      document.documentElement.classList.add('dark');
+      document.documentElement.classList.remove('light');
+    }
+  }, [theme]);
 
   const handleInstallApp = async () => {
     if (!installPrompt) {
@@ -3715,6 +3767,14 @@ export default function App() {
             >
               <Download className="w-4 h-4" /> {installPrompt ? 'Instalar' : 'Instalar / sidebar'}
             </button>
+            <button
+              type="button"
+              onClick={toggleTheme}
+              title={theme === 'dark' ? 'Alternar para Modo Claro (White mode)' : 'Alternar para Modo Escuro (Dark mode)'}
+              className="flex shrink-0 items-center justify-center px-3 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-amber-300 cursor-pointer transition"
+            >
+              {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </button>
           </div>
           {showNews && <NewsPanel onClose={() => setShowNews(false)} />}
           {showInstallHelp && <InstallHelpPanel onClose={() => setShowInstallHelp(false)} />}
@@ -3729,7 +3789,7 @@ export default function App() {
   return (
     <div className="min-h-screen lg:h-screen lg:max-h-screen bg-zinc-950 text-white flex flex-col relative overflow-x-hidden lg:overflow-hidden">
       {/* Capa do álbum desfocada; troca com crossfade quando a faixa muda. */}
-      <AlbumBackdrop src={roomState.playback.thumbnail} />
+      <AlbumBackdrop src={roomState.playback.thumbnail} theme={theme} />
 
       {/* Cabeçalho da Sala com o Ícone Oficial */}
       <header className="shrink-0 relative z-10 border-b border-zinc-800/80 bg-zinc-900/75 backdrop-blur-md px-6 py-3.5 flex flex-wrap items-center justify-between gap-4">
@@ -3793,10 +3853,34 @@ export default function App() {
         <div className="flex items-center gap-2.5">
           <button
             onClick={handleInstallApp}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold cursor-pointer"
             title="Instalar o app ou ver opções de sidebar"
           >
             <Download className="w-3.5 h-3.5" /> {installPrompt ? 'Instalar' : 'Adicionar'}
+          </button>
+
+          {/* Botão de alternância Dark / White Mode */}
+          <button
+            type="button"
+            onClick={toggleTheme}
+            title={theme === 'dark' ? 'Alternar para Modo Claro (White mode)' : 'Alternar para Modo Escuro (Dark mode)'}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
+              theme === 'dark'
+                ? 'bg-zinc-800 hover:bg-zinc-700 text-amber-300 border border-zinc-700/60'
+                : 'bg-zinc-200 hover:bg-zinc-300 text-amber-600 border border-zinc-300'
+            }`}
+          >
+            {theme === 'dark' ? (
+              <>
+                <Sun className="w-3.5 h-3.5 text-amber-300" />
+                <span className="hidden sm:inline">Modo Claro</span>
+              </>
+            ) : (
+              <>
+                <Moon className="w-3.5 h-3.5 text-amber-600" />
+                <span className="hidden sm:inline">Modo Escuro</span>
+              </>
+            )}
           </button>
           <button
             onClick={() => setShowNews(true)}

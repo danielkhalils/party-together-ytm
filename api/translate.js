@@ -38,6 +38,16 @@ function decodeHtmlEntities(str) {
     .replace(/&#x60;/g, '`');
 }
 
+function stripLeakedLanguageSuffix(text, originalText = '') {
+  if (!text || typeof text !== 'string') return text;
+  return text
+    .replace(/\s*\b(en|pt|es|fr|de|it|ja|ko)\b$/i, (match, code) => {
+      const origEnds = (originalText || '').trim().toLowerCase().endsWith(code.toLowerCase());
+      return origEnds ? match : '';
+    })
+    .trim();
+}
+
 function isErrorString(str) {
   if (!str || typeof str !== 'string') return true;
   const upper = str.toUpperCase();
@@ -79,7 +89,7 @@ async function translateSingleLine(line, target = 'pt', source = 'auto') {
       if (Array.isArray(data) && Array.isArray(data[0])) {
         const trans = data[0].map((item) => item[0]).join('');
         if (trans && !isErrorString(trans)) {
-          const result = decodeHtmlEntities(trans.trim());
+          const result = stripLeakedLanguageSuffix(decodeHtmlEntities(trans.trim()), trimmed);
           serverVerseCache.set(cacheKey, result);
           return result;
         }
@@ -95,12 +105,18 @@ async function translateSingleLine(line, target = 'pt', source = 'auto') {
       const data = await res.json();
       let trans = '';
       if (Array.isArray(data)) {
-        trans = Array.isArray(data[0]) ? data[0].join('') : data.join('');
+        if (Array.isArray(data[0])) {
+          trans = typeof data[0][0] === 'string' ? data[0][0] : data[0][0]?.toString() || '';
+        } else if (typeof data[0] === 'string') {
+          trans = data[0];
+        } else {
+          trans = data.join('');
+        }
       } else if (typeof data === 'string') {
         trans = data;
       }
       if (trans && !isErrorString(trans)) {
-        const result = decodeHtmlEntities(trans.trim());
+        const result = stripLeakedLanguageSuffix(decodeHtmlEntities(trans.trim()), trimmed);
         serverVerseCache.set(cacheKey, result);
         return result;
       }

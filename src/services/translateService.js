@@ -26,6 +26,16 @@ function decodeHtmlEntities(str) {
     .replace(/&#x60;/g, '`');
 }
 
+function stripLeakedLanguageSuffix(text, originalText = '') {
+  if (!text || typeof text !== 'string') return text;
+  return text
+    .replace(/\s*\b(en|pt|es|fr|de|it|ja|ko)\b$/i, (match, code) => {
+      const origEnds = (originalText || '').trim().toLowerCase().endsWith(code.toLowerCase());
+      return origEnds ? match : '';
+    })
+    .trim();
+}
+
 function isErrorString(str) {
   if (!str || typeof str !== 'string') return true;
   const upper = str.toUpperCase();
@@ -49,7 +59,7 @@ async function fetchGoogleGtx(text, targetLang) {
   if (!Array.isArray(data) || !Array.isArray(data[0])) throw new Error('Invalid format');
   const translated = data[0].map((item) => item[0]).join('');
   if (isErrorString(translated)) throw new Error('Error string detected');
-  return decodeHtmlEntities(translated.trim());
+  return stripLeakedLanguageSuffix(decodeHtmlEntities(translated.trim()), text);
 }
 
 // Gateway 2: Google Dict API
@@ -60,12 +70,18 @@ async function fetchGoogleDict(text, targetLang) {
   const data = await res.json();
   let translated = '';
   if (Array.isArray(data)) {
-    translated = Array.isArray(data[0]) ? data[0].join('') : data.join('');
+    if (Array.isArray(data[0])) {
+      translated = typeof data[0][0] === 'string' ? data[0][0] : data[0][0]?.toString() || '';
+    } else if (typeof data[0] === 'string') {
+      translated = data[0];
+    } else {
+      translated = data.join('');
+    }
   } else if (typeof data === 'string') {
     translated = data;
   }
   if (isErrorString(translated)) throw new Error('Error string detected');
-  return decodeHtmlEntities(translated.trim());
+  return stripLeakedLanguageSuffix(decodeHtmlEntities(translated.trim()), text);
 }
 
 // Gateway 3: MyMemory
@@ -77,7 +93,7 @@ async function fetchMyMemory(text, targetLang) {
   const data = await res.json();
   const translated = data?.responseData?.translatedText;
   if (!translated || isErrorString(translated)) throw new Error('MyMemory invalid response');
-  return decodeHtmlEntities(translated.trim());
+  return stripLeakedLanguageSuffix(decodeHtmlEntities(translated.trim()), text);
 }
 
 /**
