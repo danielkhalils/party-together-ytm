@@ -4440,21 +4440,21 @@ export default function App() {
               ref={lyricsContainerRef}
               className="better-lyrics-scroll-area min-h-0 flex-1 overflow-y-auto overflow-x-hidden rounded-2xl border border-zinc-200/80 dark:border-zinc-800/70 bg-gradient-to-b from-white/95 via-zinc-50/80 to-white/95 dark:from-zinc-950/90 dark:via-zinc-950/60 dark:to-zinc-950/90 px-4 sm:px-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden relative transition-colors"
             >
-              {/* Barra Superior da Aba Letras: Botão Traduzir e Seletor de Idioma */}
+              {/* Barra Superior da Aba Letras: Card de Tradução adaptado aos temas Dark e Light */}
               {roomState.playback.videoId && (lyricsData.synced.length > 0 || lyricsData.plain) && (
-                <div className="sticky top-2 z-20 mx-auto max-w-sm mb-3 flex items-center justify-between gap-2 p-1.5 px-3 rounded-2xl bg-white/90 dark:bg-zinc-900/95 backdrop-blur-md border border-zinc-200 dark:border-zinc-800 shadow-md">
+                <div className="lyrics-translation-card sticky top-2 z-20 mx-auto max-w-sm mb-3 flex items-center justify-between gap-2 p-1.5 px-3 rounded-2xl bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border border-zinc-200 dark:border-zinc-800 shadow-sm transition-colors">
                   <button
                     type="button"
                     onClick={() => setShowTranslatedLyrics((prev) => !prev)}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-sm ${
                       showTranslatedLyrics
-                        ? 'bg-gradient-to-r from-amber-500 to-rose-500 text-white shadow-md shadow-amber-500/20'
-                        : 'bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white border border-zinc-300 dark:border-zinc-700'
+                        ? 'bg-amber-500 text-white border border-amber-600 shadow-amber-500/20 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/60'
+                        : 'bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 hover:text-zinc-900 dark:text-zinc-200 dark:hover:text-white border border-zinc-200 dark:border-zinc-700'
                     }`}
                     title={showTranslatedLyrics ? 'Ver letra original' : 'Traduzir letra com BetterLyrics'}
                   >
-                    <Languages className="w-3.5 h-3.5 text-amber-500 dark:text-amber-300" />
-                    {showTranslatedLyrics ? 'Ver Original' : 'Traduzir Letra'}
+                    <Languages className={`w-3.5 h-3.5 ${showTranslatedLyrics ? 'text-white dark:text-amber-300' : 'text-amber-500 dark:text-amber-400'}`} />
+                    <span>{showTranslatedLyrics ? 'Ver Original' : 'Traduzir Letras'}</span>
                   </button>
 
                   {showTranslatedLyrics && (
@@ -4463,7 +4463,7 @@ export default function App() {
                       <select
                         value={translationData.targetLang}
                         onChange={(e) => setTranslationData((prev) => ({ ...prev, targetLang: e.target.value }))}
-                        className="bg-zinc-50 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-zinc-800 dark:text-zinc-200 text-xs rounded-xl px-2.5 py-1 focus:outline-none focus:border-amber-500 cursor-pointer font-medium"
+                        className="bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-zinc-200 dark:border-zinc-700 text-zinc-800 dark:text-zinc-200 text-xs rounded-xl px-2.5 py-1.5 focus:outline-none focus:border-amber-500 cursor-pointer font-medium shadow-sm transition"
                       >
                         {SUPPORTED_LANGUAGES.map((lang) => (
                           <option key={lang.code} value={lang.code}>
