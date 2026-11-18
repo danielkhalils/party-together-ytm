@@ -59,4 +59,60 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .better-lyrics-line { transition-duration: 0.01ms; }
+  .better-lyrics-shader-orb-1,
+  .better-lyrics-shader-orb-2,
+  .better-lyrics-shader-pulse {
+    animation: none !important;
+  }
+}
+
+/* Better Lyrics Ambient Fluid Shader Animations */
+@keyframes betterLyricsFluidOrb1 {
+  0%, 100% {
+    transform: translate(0, 0) scale(1) rotate(0deg);
+  }
+  33% {
+    transform: translate(8vw, 10vh) scale(1.15) rotate(40deg);
+  }
+  66% {
+    transform: translate(-6vw, 6vh) scale(0.92) rotate(80deg);
+  }
+}
+
+@keyframes betterLyricsFluidOrb2 {
+  0%, 100% {
+    transform: translate(0, 0) scale(1) rotate(0deg);
+  }
+  33% {
+    transform: translate(-10vw, -8vh) scale(1.22) rotate(-50deg);
+  }
+  66% {
+    transform: translate(6vw, -5vh) scale(0.88) rotate(-100deg);
+  }
+}
+
+@keyframes betterLyricsFluidPulse {
+  0%, 100% {
+    opacity: 0.45;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: translate(-50%, -50%) scale(1.12);
+  }
+}
+
+.better-lyrics-shader-orb-1 {
+  animation: betterLyricsFluidOrb1 24s ease-in-out infinite;
+  will-change: transform;
+}
+
+.better-lyrics-shader-orb-2 {
+  animation: betterLyricsFluidOrb2 30s ease-in-out infinite;
+  will-change: transform;
+}
+
+.better-lyrics-shader-pulse {
+  animation: betterLyricsFluidPulse 16s ease-in-out infinite;
+  will-change: transform, opacity;
 }

@@ -10,6 +10,34 @@ async function getYTM() {
   return ytmusic;
 }
 
+function cleanTrackTitle(rawTitle) {
+  if (!rawTitle) return '';
+  let title = String(rawTitle).trim();
+
+  // 1. Remove sufixos que vêm após separadores |, //, -, •, :
+  title = title.replace(/\s*(?:\||\/\/|•|–|—)\s*(?:official\s*(?:music\s*)?video|official\s*audio|visualizer|audio|lyric\s*video|lyrics|letra|vídeo\s*oficial|clipe\s*oficial|video\s*oficial|audio\s*oficial|4k|hd|hq|live|ao\s*vivo).*$/i, '');
+
+  // 2. Remove tags entre parênteses (...) ou colchetes [...]
+  title = title.replace(/\s*[([][^\])]*(?:official\s*(?:music\s*)?video|official\s*audio|official|music\s*video|visualizer|audio|lyric\s*video|lyrics|letra|vídeo\s*oficial|clipe\s*oficial|video\s*oficial|audio\s*oficial|videoclipe|clip\s*oficial|4k|hd|hq|remastered|remasterizado|prod\.|produced\s*by|ft\.|feat\.|ao\s*vivo|live)[^\])]*[)\]]/gi, '');
+
+  // 3. Remove tags soltas no fim do nome
+  title = title.replace(/\s+(?:official\s*(?:music\s*)?video|official\s*audio|lyric\s*video|lyrics|letra|visualizer|clipe\s*oficial|video\s*oficial|audio\s*oficial)\s*$/i, '');
+
+  // 4. Limpa pontuação residual
+  title = title.replace(/\s*[-–—:|/]\s*$/, '').replace(/\s+/g, ' ').trim();
+
+  return title || rawTitle;
+}
+
+function cleanArtistName(rawArtist) {
+  if (!rawArtist) return 'Artista Desconhecido';
+  let artist = String(rawArtist).trim();
+  artist = artist.replace(/\s*-\s*Topic$/i, '');
+  artist = artist.replace(/\s*VEVO$/i, '');
+  artist = artist.replace(/\s*(?:\||\/\/|•)\s*.*$/i, '');
+  return artist.trim() || 'Artista Desconhecido';
+}
+
 // Fallback caso a API interna do YT Music seja bloqueada ou falhe no datacenter do Vercel
 async function searchYouTubeFallback(query) {
   const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`;
@@ -41,8 +69,8 @@ async function searchYouTubeFallback(query) {
       const v = item.videoRenderer;
       if (!v || !v.videoId) continue;
 
-      const title = v.title?.runs?.map((r) => r.text).join('') || 'Sem título';
-      const artist = v.ownerText?.runs?.map((r) => r.text).join('') || 'Artista Desconhecido';
+      const title = cleanTrackTitle(v.title?.runs?.map((r) => r.text).join('') || 'Sem título');
+      const artist = cleanArtistName(v.ownerText?.runs?.map((r) => r.text).join('') || 'Artista Desconhecido');
       const duration = v.lengthText?.simpleText || 'YT';
       const thumbnails = v.thumbnail?.thumbnails || [];
       const thumbnail =
@@ -109,8 +137,8 @@ export default async function handler(req, res) {
 
         return {
           videoId: song.videoId,
-          title: song.name,
-          artist: song.artist?.name || 'Artista Desconhecido',
+          title: cleanTrackTitle(song.name),
+          artist: cleanArtistName(song.artist?.name || 'Artista Desconhecido'),
           duration: durationStr,
           thumbnail:
             song.thumbnails?.[song.thumbnails.length - 1]?.url ||

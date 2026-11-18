@@ -391,29 +391,72 @@ function AlbumBackdrop({ src }) {
     setLayers((previous) => previous.map((layer) => ({ ...layer, visible: layer.id === id })));
   };
 
-  if (!layers.length) return null;
+  if (!layers.length) {
+    return (
+      <div className="pointer-events-none fixed inset-0 z-0 bg-gradient-to-br from-zinc-950 via-zinc-900 to-black overflow-hidden">
+        <div className="absolute -top-32 -left-32 w-[60vw] h-[60vw] max-w-[800px] max-h-[800px] rounded-full bg-red-600/15 blur-[120px] better-lyrics-shader-orb-1" />
+        <div className="absolute -bottom-32 -right-32 w-[55vw] h-[55vw] max-w-[750px] max-h-[750px] rounded-full bg-amber-600/15 blur-[120px] better-lyrics-shader-orb-2" />
+        <div className="absolute inset-0 bg-zinc-950/70" />
+      </div>
+    );
+  }
+
   return (
-    <>
+    <div className="pointer-events-none fixed inset-0 z-0 overflow-hidden select-none">
       {layers.map((layer) => (
-        <img
+        <div
           key={layer.id}
-          src={layer.src}
-          alt=""
-          aria-hidden="true"
-          fetchPriority="low"
-          decoding="async"
-          onLoad={() => handleImageLoaded(layer.id, layer.src)}
-          onError={() => setLayers((previous) => previous.filter((item) => item.id !== layer.id))}
+          className={`absolute inset-0 transition-opacity duration-1000 ease-out ${
+            layer.visible ? 'opacity-100' : 'opacity-0'
+          }`}
           onTransitionEnd={(event) => {
             if (event.propertyName === 'opacity' && !layer.visible) {
               setLayers((previous) => previous.filter((item) => item.id !== layer.id));
             }
           }}
-          className={`pointer-events-none fixed inset-0 z-0 h-full w-full scale-110 object-cover blur-[48px] transition-opacity duration-1000 ease-in-out ${layer.visible ? 'opacity-35' : 'opacity-0'}`}
-        />
+        >
+          {/* Preload invisível */}
+          <img
+            src={layer.src}
+            alt=""
+            aria-hidden="true"
+            fetchPriority="low"
+            decoding="async"
+            onLoad={() => handleImageLoaded(layer.id, layer.src)}
+            onError={() => setLayers((previous) => previous.filter((item) => item.id !== layer.id))}
+            className="hidden"
+          />
+
+          {/* Camada 1: Mesh base em ultra-blur com saturação e contraste no estilo Better Lyrics */}
+          <div
+            className="absolute inset-[-30%] w-[160%] h-[160%] bg-cover bg-center blur-[100px] brightness-[0.7] saturate-[200%] contrast-[115%] transform scale-110"
+            style={{ backgroundImage: `url(${layer.src})` }}
+          />
+
+          {/* Camada 2: Fluid Shader Orb 1 (Orb dinâmico no topo-esquerdo que flutua e respira) */}
+          <div
+            className="better-lyrics-shader-orb-1 absolute -top-[15%] -left-[15%] w-[75vw] h-[75vw] max-w-[900px] max-h-[900px] rounded-full bg-cover bg-center blur-[120px] opacity-75 mix-blend-screen"
+            style={{ backgroundImage: `url(${layer.src})` }}
+          />
+
+          {/* Camada 3: Fluid Shader Orb 2 (Orb dinâmico na base-direita com rotação contrária) */}
+          <div
+            className="better-lyrics-shader-orb-2 absolute -bottom-[15%] -right-[15%] w-[70vw] h-[70vw] max-w-[850px] max-h-[850px] rounded-full bg-cover bg-center blur-[110px] opacity-70 mix-blend-screen"
+            style={{ backgroundImage: `url(${layer.src})` }}
+          />
+
+          {/* Camada 4: Pulsar central de aura (iluminação ambiente viva do Better Lyrics) */}
+          <div
+            className="better-lyrics-shader-pulse absolute top-1/2 left-1/2 w-[60vw] h-[60vw] max-w-[700px] max-h-[700px] rounded-full bg-cover bg-center blur-[130px] opacity-50 mix-blend-color-dodge"
+            style={{ backgroundImage: `url(${layer.src})` }}
+          />
+        </div>
       ))}
-      <div className="pointer-events-none fixed inset-0 z-0 bg-zinc-950/45" />
-    </>
+
+      {/* Camada 5: Vinheta e ambient shading escuro para manter textos e letras 100% legíveis */}
+      <div className="absolute inset-0 bg-radial from-transparent via-zinc-950/50 to-zinc-950/85 pointer-events-none" />
+      <div className="absolute inset-0 bg-gradient-to-t from-zinc-950/90 via-transparent to-zinc-950/70 pointer-events-none" />
+    </div>
   );
 }
 
@@ -513,6 +556,35 @@ function InstallHelpPanel({ onClose }) {
   );
 }
 
+// Remove tags como Official Video, Lyric Video, Visualizer, etc.
+function cleanTrackTitle(rawTitle) {
+  if (!rawTitle) return '';
+  let title = String(rawTitle).trim();
+
+  // 1. Remove sufixos que vêm após separadores |, //, -, •, :
+  title = title.replace(/\s*(?:\||\/\/|•|–|—)\s*(?:official\s*(?:music\s*)?video|official\s*audio|visualizer|audio|lyric\s*video|lyrics|letra|vídeo\s*oficial|clipe\s*oficial|video\s*oficial|audio\s*oficial|4k|hd|hq|live|ao\s*vivo).*$/i, '');
+
+  // 2. Remove tags entre parênteses (...) ou colchetes [...]
+  title = title.replace(/\s*[([][^\])]*(?:official\s*(?:music\s*)?video|official\s*audio|official|music\s*video|visualizer|audio|lyric\s*video|lyrics|letra|vídeo\s*oficial|clipe\s*oficial|video\s*oficial|audio\s*oficial|videoclipe|clip\s*oficial|4k|hd|hq|remastered|remasterizado|prod\.|produced\s*by|ft\.|feat\.|ao\s*vivo|live)[^\])]*[)\]]/gi, '');
+
+  // 3. Remove tags soltas no fim do nome
+  title = title.replace(/\s+(?:official\s*(?:music\s*)?video|official\s*audio|lyric\s*video|lyrics|letra|visualizer|clipe\s*oficial|video\s*oficial|audio\s*oficial)\s*$/i, '');
+
+  // 4. Limpa pontuação residual
+  title = title.replace(/\s*[-–—:|/]\s*$/, '').replace(/\s+/g, ' ').trim();
+
+  return title || rawTitle;
+}
+
+function cleanArtistName(rawArtist) {
+  if (!rawArtist) return 'Artista Desconhecido';
+  let artist = String(rawArtist).trim();
+  artist = artist.replace(/\s*-\s*Topic$/i, '');
+  artist = artist.replace(/\s*VEVO$/i, '');
+  artist = artist.replace(/\s*(?:\||\/\/|•)\s*.*$/i, '');
+  return artist.trim() || 'Artista Desconhecido';
+}
+
 // Utilitário para extrair ID do YouTube se o usuário colar um link direto
 function extractYouTubeId(input) {
   if (!input) return null;
@@ -534,15 +606,15 @@ async function fetchYouTubeVideoDetails(videoId) {
       const rawTitle = String(data.title || '').trim();
       const authorName = String(data.author_name || 'YouTube').trim();
 
-      let title = rawTitle;
-      let artist = authorName;
+      let title = cleanTrackTitle(rawTitle);
+      let artist = cleanArtistName(authorName);
 
       // Se o título contiver "Artista - Música", separa de forma elegante
       if (rawTitle.includes(' - ')) {
         const parts = rawTitle.split(' - ');
         if (parts.length >= 2 && parts[0].trim() && parts[1].trim()) {
-          artist = parts[0].trim();
-          title = parts.slice(1).join(' - ').trim();
+          artist = cleanArtistName(parts[0]);
+          title = cleanTrackTitle(parts.slice(1).join(' - '));
         }
       }
 
@@ -568,8 +640,8 @@ async function fetchYouTubeVideoDetails(videoId) {
         if (match && match.title) {
           return {
             videoId,
-            title: match.title,
-            artist: match.artist || 'YouTube',
+            title: cleanTrackTitle(match.title),
+            artist: cleanArtistName(match.artist || 'YouTube'),
             duration: match.duration || 'YouTube',
             thumbnail: match.thumbnail || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
           };
@@ -592,6 +664,8 @@ function createPlaylistItem(track, addedBy, status = 'queued') {
   return {
     ...track,
     id: 'track_' + Math.random().toString(36).substring(2, 10),
+    title: cleanTrackTitle(track?.title),
+    artist: cleanArtistName(track?.artist),
     addedBy,
     votes: 1,
     status
@@ -1788,7 +1862,7 @@ export default function App() {
             error: `Não encontramos a letra exata para "${cleanTitle}" de ${cleanArtist}.`
           });
         }
-      } catch (err) {
+      } catch {
         if (!isCancelled) {
           setLyricsData({
             loading: false,
@@ -2728,9 +2802,15 @@ export default function App() {
   handleSkipNextRef.current = handleSkipNext;
 
   // Adicionar música: Se não houver música tocando ainda, inicia imediatamente no Player!
-  const handleAddTrack = (track) => {
+  const handleAddTrack = (rawTrack) => {
     const currentRoom = roomStateRef.current;
-    if (!currentRoom) return;
+    if (!currentRoom || !rawTrack) return;
+
+    const track = {
+      ...rawTrack,
+      title: cleanTrackTitle(rawTrack.title),
+      artist: cleanArtistName(rawTrack.artist)
+    };
 
     const alreadyQueuedOrPlaying = currentRoom.playback?.videoId === track.videoId || (currentRoom.playlist || []).some((item) =>
       item.videoId === track.videoId && ['queued', 'playing'].includes(item.status)
@@ -3819,8 +3899,8 @@ export default function App() {
                 <Sparkles className="w-3 h-3" /> Escolhida por {roomState.playback.addedBy}
               </span>
             )}
-            <h3 className="text-xl font-bold line-clamp-1">{roomState.playback.title}</h3>
-            <p className="text-sm text-zinc-400 mb-4">{roomState.playback.artist}</p>
+            <h3 className="text-xl font-bold line-clamp-1">{cleanTrackTitle(roomState.playback.title)}</h3>
+            <p className="text-sm text-zinc-400 mb-4">{cleanArtistName(roomState.playback.artist)}</p>
 
             {/* Barra de Progresso Interativa para o Anfitrião */}
             <div
@@ -4303,13 +4383,13 @@ export default function App() {
               ) : lyricsData.loading ? (
                 <div className="text-center py-16 text-zinc-400 flex flex-col items-center gap-3">
                   <Disc3 className="w-7 h-7 text-red-500 animate-spin" />
-                  <span className="text-sm">Sincronizando letra de &ldquo;{roomState.playback.title}&rdquo;...</span>
+                  <span className="text-sm">Sincronizando letra de &ldquo;{cleanTrackTitle(roomState.playback.title)}&rdquo;...</span>
                 </div>
               ) : showTranslatedLyrics ? (
                 translationData.loading ? (
                   <div className="text-center py-16 text-zinc-400 flex flex-col items-center gap-3">
                     <Disc3 className="w-7 h-7 text-amber-500 animate-spin" />
-                    <span className="text-sm">Traduzindo letra via BetterLyrics para &ldquo;{roomState.playback.title}&rdquo;...</span>
+                    <span className="text-sm">Traduzindo letra via BetterLyrics para &ldquo;{cleanTrackTitle(roomState.playback.title)}&rdquo;...</span>
                   </div>
                 ) : translationData.synced.length > 0 ? (
                   <SyncedTranslatedLyricsList
