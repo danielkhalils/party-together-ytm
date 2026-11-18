@@ -3756,14 +3756,14 @@ export default function App() {
             <button
               type="button"
               onClick={() => setShowNews(true)}
-              className="flex shrink-0 items-center gap-1.5 rounded-xl bg-zinc-800 px-3 py-2.5 text-xs font-semibold text-amber-300 hover:bg-zinc-700"
+              className="flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2.5 text-xs font-semibold transition cursor-pointer bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-amber-500 dark:text-amber-300 border border-zinc-200 dark:border-transparent shadow-sm"
             >
               <Bell className="h-4 w-4" /> Novidades
             </button>
             <button
               type="button"
               onClick={handleInstallApp}
-              className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl bg-zinc-800 py-2.5 text-xs font-semibold text-zinc-200 hover:bg-zinc-700"
+              className="flex min-w-0 flex-1 items-center justify-center gap-2 rounded-xl py-2.5 text-xs font-semibold transition cursor-pointer bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 border border-zinc-200 dark:border-transparent shadow-sm"
             >
               <Download className="w-4 h-4" /> {installPrompt ? 'Instalar' : 'Instalar / sidebar'}
             </button>
@@ -3771,7 +3771,7 @@ export default function App() {
               type="button"
               onClick={toggleTheme}
               title={theme === 'dark' ? 'Alternar para Modo Claro (White mode)' : 'Alternar para Modo Escuro (Dark mode)'}
-              className="flex shrink-0 items-center justify-center px-3 py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-amber-300 cursor-pointer transition"
+              className="flex shrink-0 items-center justify-center px-3 py-2.5 rounded-xl transition cursor-pointer bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-amber-500 dark:text-amber-300 border border-zinc-200 dark:border-transparent shadow-sm"
             >
               {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>
@@ -3841,10 +3841,10 @@ export default function App() {
                 type="button"
                 onClick={handleOpenEditName}
                 title="Clique para alterar seu apelido nesta sala"
-                className="font-semibold text-zinc-200 hover:text-red-400 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-lg hover:bg-zinc-800 transition cursor-pointer"
+                className="font-semibold text-zinc-800 dark:text-zinc-200 hover:text-red-500 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-sm transition cursor-pointer"
               >
                 <span>{username}</span>
-                <Pencil className="w-3 h-3 text-zinc-400 hover:text-red-400" />
+                <Pencil className="w-3 h-3 text-zinc-400 hover:text-red-500" />
               </button>
             </p>
           </div>
@@ -3853,7 +3853,7 @@ export default function App() {
         <div className="flex items-center gap-2.5">
           <button
             onClick={handleInstallApp}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold cursor-pointer transition bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 border border-zinc-200 dark:border-transparent shadow-sm"
             title="Instalar o app ou ver opções de sidebar"
           >
             <Download className="w-3.5 h-3.5" /> {installPrompt ? 'Instalar' : 'Adicionar'}
@@ -3864,20 +3864,16 @@ export default function App() {
             type="button"
             onClick={toggleTheme}
             title={theme === 'dark' ? 'Alternar para Modo Claro (White mode)' : 'Alternar para Modo Escuro (Dark mode)'}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
-              theme === 'dark'
-                ? 'bg-zinc-800 hover:bg-zinc-700 text-amber-300 border border-zinc-700/60'
-                : 'bg-zinc-200 hover:bg-zinc-300 text-amber-600 border border-zinc-300'
-            }`}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-amber-500 dark:text-amber-300 border border-zinc-200 dark:border-zinc-700/60 shadow-sm"
           >
             {theme === 'dark' ? (
               <>
-                <Sun className="w-3.5 h-3.5 text-amber-300" />
+                <Sun className="w-3.5 h-3.5 text-amber-500" />
                 <span className="hidden sm:inline">Modo Claro</span>
               </>
             ) : (
               <>
-                <Moon className="w-3.5 h-3.5 text-amber-600" />
+                <Moon className="w-3.5 h-3.5 text-amber-500" />
                 <span className="hidden sm:inline">Modo Escuro</span>
               </>
             )}
@@ -3886,7 +3882,7 @@ export default function App() {
             onClick={() => setShowNews(true)}
             title="Novidades"
             aria-label="Abrir novidades"
-            className="relative rounded-xl bg-zinc-800 p-2 text-amber-300 hover:bg-zinc-700"
+            className="relative rounded-xl p-2 text-amber-500 dark:text-amber-300 cursor-pointer transition bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-zinc-200 dark:border-transparent shadow-sm"
           >
             <Bell className="h-4 w-4" />
             <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-amber-400" />
@@ -3905,7 +3901,7 @@ export default function App() {
                 window.prompt('Copie o link do convite:', inviteUrl.toString());
               }
             }}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer bg-zinc-100 hover:bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-200 border border-zinc-300 dark:border-zinc-700/60"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700/60 shadow-sm"
           >
             {copied ? (
               <Check className="w-3.5 h-3.5 text-emerald-500" />
@@ -3918,7 +3914,7 @@ export default function App() {
           <button
             onClick={leaveRoom}
             title={isHost ? 'Sair da sala (mantém a sala aberta para retorno)' : 'Sair da sala'}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer bg-zinc-100 hover:bg-zinc-200 text-zinc-600 hover:text-zinc-900 dark:bg-zinc-900 dark:hover:bg-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200 border border-zinc-300 dark:border-zinc-800"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer bg-white hover:bg-zinc-50 dark:bg-zinc-900 dark:hover:bg-zinc-800 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200 border border-zinc-200 dark:border-zinc-800 shadow-sm"
           >
             <LogOut className="w-3.5 h-3.5" />
             Sair
@@ -3928,7 +3924,7 @@ export default function App() {
             <button
               onClick={deleteRoom}
               title="Excluir sala permanentemente para todos"
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 dark:bg-red-950/40 dark:hover:bg-red-900/60 dark:text-red-400 dark:border-red-900/50"
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer bg-white hover:bg-red-50 text-red-600 border border-red-200 dark:bg-red-950/40 dark:hover:bg-red-900/60 dark:text-red-400 dark:border-red-900/50 shadow-sm"
             >
               <Trash2 className="w-3.5 h-3.5" />
               Excluir Sala
@@ -4070,7 +4066,7 @@ export default function App() {
                   <button
                     onClick={handleSkipNext}
                     disabled={roomState.queue.length === 0}
-                    className="w-9 h-9 rounded-full bg-zinc-800 hover:bg-zinc-700 disabled:opacity-40 flex items-center justify-center text-white transition cursor-pointer"
+                    className="w-9 h-9 rounded-full bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 disabled:opacity-40 flex items-center justify-center text-zinc-800 dark:text-white border border-zinc-200 dark:border-transparent transition cursor-pointer shadow-sm"
                     title="Pular para a próxima música da fila"
                   >
                     <SkipForward className="w-4 h-4" />
@@ -4091,10 +4087,10 @@ export default function App() {
                 <button
                   type="button"
                   onClick={handleVoteSkipTrack}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition cursor-pointer ${
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition cursor-pointer shadow-sm ${
                     (roomState.playback.skipVoters || []).includes(userId)
-                      ? 'bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/50 text-amber-600 dark:bg-amber-950/70 dark:hover:bg-amber-900/80 dark:border-amber-500/70 dark:text-amber-300'
-                      : 'bg-zinc-100 hover:bg-zinc-200 border-zinc-300 text-zinc-700 hover:text-zinc-900 dark:bg-zinc-800/90 dark:hover:bg-zinc-700/90 dark:border-zinc-700/70 dark:text-zinc-300 dark:hover:text-white'
+                      ? 'bg-white hover:bg-amber-50 border-amber-400 text-amber-600 dark:bg-amber-950/70 dark:hover:bg-amber-900/80 dark:border-amber-500/70 dark:text-amber-300'
+                      : 'bg-white hover:bg-zinc-50 border-zinc-200 text-zinc-700 hover:text-zinc-900 dark:bg-zinc-800/90 dark:hover:bg-zinc-700/90 dark:border-zinc-700/70 dark:text-zinc-300 dark:hover:text-white'
                   }`}
                   title={
                     (roomState.playback.skipVoters || []).includes(userId)
@@ -4106,7 +4102,7 @@ export default function App() {
                   <span>
                     {(roomState.playback.skipVoters || []).includes(userId) ? 'Votado p/ pular' : 'Pular'}
                   </span>
-                  <span className="px-1.5 py-0.5 rounded-full bg-zinc-200 text-zinc-700 dark:bg-zinc-950/80 dark:text-zinc-300 text-[10px] font-mono">
+                  <span className="px-1.5 py-0.5 rounded-full bg-zinc-100 text-zinc-700 dark:bg-zinc-950/80 dark:text-zinc-300 text-[10px] font-mono border border-zinc-200 dark:border-transparent">
                     {(roomState.playback.skipVoters || []).length}/{getMajorityCount((roomState.members || []).length || 1)}
                   </span>
                 </button>
@@ -4146,7 +4142,7 @@ export default function App() {
               onClick={handleResyncPlayer}
               disabled={!roomState.playback.videoId || isResyncingPlayer}
               title="Recarregar a música atual e sincronizar este player com a sala"
-              className="mt-3 flex self-end items-center gap-1.5 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-950/80 dark:hover:bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-700 dark:text-zinc-300 transition hover:border-red-500/60 hover:text-red-500 dark:hover:text-white disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
+              className="mt-3 flex self-end items-center gap-1.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white hover:bg-zinc-50 dark:bg-zinc-950/80 dark:hover:bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-700 dark:text-zinc-300 transition hover:border-red-500/60 hover:text-red-500 dark:hover:text-white disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer shadow-sm"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${isResyncingPlayer ? 'animate-spin text-red-400' : ''}`} />
               {isResyncingPlayer ? 'Sincronizando...' : 'Sincronizar player'}
@@ -4169,10 +4165,10 @@ export default function App() {
                 return (
                   <div
                     key={m.id}
-                    className={`group relative pl-2 pr-3.5 py-1.5 rounded-2xl text-xs sm:text-sm border flex items-center gap-2.5 shadow-sm transition-all hover:scale-[1.02] ${
+                    className={`party-member-card group relative pl-2 pr-3.5 py-1.5 rounded-2xl text-xs sm:text-sm border flex items-center gap-2.5 shadow-sm transition-all hover:scale-[1.02] bg-white dark:bg-zinc-950 ${
                       isSelf
-                        ? 'border-red-500/60 bg-red-500/10 dark:bg-red-950/25 text-red-600 dark:text-red-200'
-                        : 'border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-zinc-800 dark:text-zinc-200'
+                        ? 'border-red-500/60 text-red-600 dark:text-red-200'
+                        : 'border-zinc-200 dark:border-zinc-800 text-zinc-800 dark:text-zinc-200'
                     }`}
                   >
                     {/* Avatar ampliado com badge pulsante de status online */}
@@ -4238,9 +4234,9 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActiveTab('search')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'search'
+                className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm ${activeTab === 'search'
                   ? 'bg-red-600 text-white shadow-md shadow-red-600/20'
-                  : 'bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-950 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white border border-zinc-200 dark:border-zinc-800'
+                  : 'bg-white hover:bg-zinc-50 dark:bg-zinc-950 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white border border-zinc-200 dark:border-zinc-800'
                   }`}
               >
                 <Search className="w-3.5 h-3.5" /> Buscar Música
@@ -4249,9 +4245,9 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActiveTab('queue')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'queue'
+                className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm ${activeTab === 'queue'
                   ? 'bg-red-600 text-white shadow-md shadow-red-600/20'
-                  : 'bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-950 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white border border-zinc-200 dark:border-zinc-800'
+                  : 'bg-white hover:bg-zinc-50 dark:bg-zinc-950 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white border border-zinc-200 dark:border-zinc-800'
                   }`}
               >
                 <ListMusic className="w-3.5 h-3.5" /> Playlist ({roomState.playlist?.length ?? roomState.queue.length})
@@ -4260,9 +4256,9 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActiveTab('lyrics')}
-                className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'lyrics'
+                className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm ${activeTab === 'lyrics'
                   ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white shadow-md shadow-red-600/20'
-                  : 'bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-950 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white border border-zinc-200 dark:border-zinc-800'
+                  : 'bg-white hover:bg-zinc-50 dark:bg-zinc-950 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white border border-zinc-200 dark:border-zinc-800'
                   }`}
               >
                 <Mic2 className="w-3.5 h-3.5" /> Letra (BetterLyrics)
@@ -4271,9 +4267,9 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActiveTab('chat')}
-                className={`relative px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'chat'
+                className={`relative px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm ${activeTab === 'chat'
                   ? 'bg-red-600 text-white shadow-md shadow-red-600/20'
-                  : 'bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-950 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white border border-zinc-200 dark:border-zinc-800'
+                  : 'bg-white hover:bg-zinc-50 dark:bg-zinc-950 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white border border-zinc-200 dark:border-zinc-800'
                   }`}
               >
                 <MessageCircle className="w-3.5 h-3.5" /> Chat ({roomState.chat?.length || 0})

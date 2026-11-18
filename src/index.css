@@ -169,19 +169,51 @@ html.light .text-zinc-500 {
   color: #94a3b8 !important;
 }
 
-/* Botões neutros (Convidar, Sair, Adicionar, Novidades, Sincronizar) */
+/* Botões neutros (Convidar, Sair, Adicionar, Novidades, Sincronizar, etc.) em fundo branco */
 html.light .bg-zinc-800,
 html.light .bg-zinc-800\/90,
-html.light .bg-zinc-800\/80 {
-  background-color: #f1f5f9 !important;
-  color: #1e293b !important;
+html.light .bg-zinc-800\/80,
+html.light .bg-zinc-100,
+html.light .bg-zinc-200 {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
   border: 1px solid #e2e8f0 !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) !important;
 }
 
 html.light .hover\:bg-zinc-700:hover,
-html.light .hover\:bg-zinc-800:hover {
-  background-color: #e2e8f0 !important;
+html.light .hover\:bg-zinc-800:hover,
+html.light .hover\:bg-zinc-200:hover,
+html.light .hover\:bg-zinc-50:hover {
+  background-color: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+  color: #000000 !important;
+}
+
+/* Regra abrangente: em White Mode, os botões têm fundo branco puro */
+html.light button:not(.bg-red-600):not(.bg-gradient-to-r):not(.bg-amber-600):not(.bg-emerald-600):not(.text-red-500) {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
   color: #0f172a !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) !important;
+}
+
+html.light button:not(.bg-red-600):not(.bg-gradient-to-r):not(.bg-amber-600):hover {
+  background-color: #f8fafc !important;
+  border-color: #cbd5e1 !important;
+}
+
+/* Cards de Usuário e Participantes na Party com fundo branco puro */
+html.light .party-member-card,
+html.light .user-card {
+  background-color: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
+}
+
+html.light .party-member-card.party-member-card-self {
+  background-color: #ffffff !important;
+  border-color: rgba(239, 68, 68, 0.5) !important;
 }
 
 /* Botão Excluir Sala e Ações de Perigo no modo claro */
