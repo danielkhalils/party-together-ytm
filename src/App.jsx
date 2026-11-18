@@ -515,9 +515,77 @@ function InstallHelpPanel({ onClose }) {
 
 // Utilitário para extrair ID do YouTube se o usuário colar um link direto
 function extractYouTubeId(input) {
+  if (!input) return null;
   const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;
   const match = input.match(regExp);
   return match && match[2].length === 11 ? match[2] : null;
+}
+
+// Obtém título, artista e miniatura reais de um vídeo do YouTube via oEmbed e fallbacks
+async function fetchYouTubeVideoDetails(videoId) {
+  if (!videoId) return null;
+
+  // 1. YouTube oEmbed oficial (sem chave de API, com suporte CORS em navegadores)
+  try {
+    const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+    const res = await fetch(oembedUrl);
+    if (res.ok) {
+      const data = await res.json();
+      const rawTitle = String(data.title || '').trim();
+      const authorName = String(data.author_name || 'YouTube').trim();
+
+      let title = rawTitle;
+      let artist = authorName;
+
+      // Se o título contiver "Artista - Música", separa de forma elegante
+      if (rawTitle.includes(' - ')) {
+        const parts = rawTitle.split(' - ');
+        if (parts.length >= 2 && parts[0].trim() && parts[1].trim()) {
+          artist = parts[0].trim();
+          title = parts.slice(1).join(' - ').trim();
+        }
+      }
+
+      return {
+        videoId,
+        title: title || `Vídeo ${videoId}`,
+        artist: artist || authorName,
+        duration: 'YouTube',
+        thumbnail: data.thumbnail_url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+      };
+    }
+  } catch (err) {
+    console.warn('[YouTube oEmbed] Falha ao consultar oEmbed:', err);
+  }
+
+  // 2. Fallback via busca interna /api/search
+  try {
+    const apiRes = await fetch(`/api/search?q=${encodeURIComponent(videoId)}`);
+    if (apiRes.ok) {
+      const results = await apiRes.json();
+      if (Array.isArray(results) && results.length > 0) {
+        const match = results.find((r) => r.videoId === videoId) || results[0];
+        if (match && match.title) {
+          return {
+            videoId,
+            title: match.title,
+            artist: match.artist || 'YouTube',
+            duration: match.duration || 'YouTube',
+            thumbnail: match.thumbnail || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+          };
+        }
+      }
+    }
+  } catch {}
+
+  // 3. Fallback mínimo
+  return {
+    videoId,
+    title: `Vídeo (${videoId})`,
+    artist: 'YouTube',
+    duration: 'YouTube',
+    thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+  };
 }
 
 function createPlaylistItem(track, addedBy, status = 'queued') {
@@ -946,7 +1014,7 @@ export default function App() {
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
 
-  // Abas: 'queue' | 'search' | 'lyrics' | 'translation' | 'chat'
+  // Abas: 'queue' | 'search' | 'lyrics' | 'chat'
   const [activeTab, setActiveTab] = useState('search');
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [isChatMuted, setIsChatMuted] = useState(() => {
@@ -999,7 +1067,8 @@ export default function App() {
     error: null
   });
 
-  // Estados do BetterLyrics — Tradução de Letras
+  // Tradução de Letras integrada na aba Letras (BetterLyrics)
+  const [showTranslatedLyrics, setShowTranslatedLyrics] = useState(false);
   const [translationData, setTranslationData] = useState({
     loading: false,
     synced: [],
@@ -1007,8 +1076,6 @@ export default function App() {
     error: null,
     targetLang: 'pt'
   });
-  const translationContainerRef = useRef(null);
-  const activeTranslationLyricRef = useRef(null);
 
   // Monitoramento da Party Anterior (Online e Tocando Música)
   const [previousPartyStatus, setPreviousPartyStatus] = useState(null);
@@ -1554,11 +1621,29 @@ export default function App() {
     }
   };
 
-  // 4. Busca de músicas no YouTube Music (Inicia vazia até o usuário digitar)
+  // 4. Busca de músicas no YouTube Music (ou busca automática de dados reais se colou link direto)
   useEffect(() => {
     const query = searchQuery.trim();
+    const extractedId = extractYouTubeId(query);
 
-    if (!query || extractYouTubeId(query)) {
+    // Se o usuário colou um link do YouTube, busca imediatamente os dados e o título real do vídeo
+    if (extractedId) {
+      let isCancelled = false;
+      setIsSearching(true);
+      fetchYouTubeVideoDetails(extractedId).then((videoDetails) => {
+        if (!isCancelled && videoDetails) {
+          setSearchResults([videoDetails]);
+          setIsSearching(false);
+        }
+      }).catch(() => {
+        if (!isCancelled) setIsSearching(false);
+      });
+      return () => {
+        isCancelled = true;
+      };
+    }
+
+    if (!query) {
       setSearchResults([]);
       setIsSearching(false);
       return;
@@ -1570,7 +1655,9 @@ export default function App() {
         const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
         if (res.ok) {
           const data = await res.json();
-          setSearchResults(data);
+          setSearchResults(Array.isArray(data) ? data : []);
+        } else {
+          setSearchResults([]);
         }
       } catch (err) {
         console.error('Erro ao buscar no YT Music:', err);
@@ -1719,17 +1806,13 @@ export default function App() {
     };
   }, [roomState?.playback?.videoId]);
 
-  // 5b. Tradução automática das Letras obtidas do BetterLyrics
+  // 5b. Tradução das Letras obtidas do BetterLyrics (ativada pelo botão de Traduzir na aba Letras)
   useEffect(() => {
     const currentVideoId = roomState?.playback?.videoId;
-    if (!currentVideoId || (!lyricsData.synced.length && !lyricsData.plain)) {
-      setTranslationData((prev) => ({
-        ...prev,
-        loading: false,
-        synced: [],
-        plain: '',
-        error: null
-      }));
+    if (!showTranslatedLyrics || !currentVideoId || (!lyricsData.synced.length && !lyricsData.plain)) {
+      if (!showTranslatedLyrics) {
+        setTranslationData((prev) => ({ ...prev, loading: false }));
+      }
       return;
     }
 
@@ -1783,7 +1866,7 @@ export default function App() {
     return () => {
       isCancelled = true;
     };
-  }, [roomState?.playback?.videoId, lyricsData.synced, lyricsData.plain, translationData.targetLang]);
+  }, [showTranslatedLyrics, roomState?.playback?.videoId, lyricsData.synced, lyricsData.plain, translationData.targetLang]);
 
   // 6. Inicializa ou atualiza o Player do YouTube quando há uma música ativa na sala
   useEffect(() => {
@@ -2121,12 +2204,11 @@ export default function App() {
 
   // Smoothly scroll only the lyrics viewport; cancel the previous movement on a new line.
   useEffect(() => {
-    const isTranslation = activeTab === 'translation';
-    const container = isTranslation ? translationContainerRef.current : lyricsContainerRef.current;
-    const activeLine = isTranslation ? activeTranslationLyricRef.current : activeLyricRef.current;
+    const container = lyricsContainerRef.current;
+    const activeLine = activeLyricRef.current;
     if (lyricScrollFrameRef.current) cancelAnimationFrame(lyricScrollFrameRef.current);
     lyricScrollFrameRef.current = null;
-    if ((activeTab !== 'lyrics' && activeTab !== 'translation') || activeLyricIndex < 0 || !container || !activeLine) return;
+    if (activeTab !== 'lyrics' || activeLyricIndex < 0 || !container || !activeLine) return;
 
     const containerRect = container.getBoundingClientRect();
     const lineRect = activeLine.getBoundingClientRect();
@@ -2154,7 +2236,7 @@ export default function App() {
       if (lyricScrollFrameRef.current) cancelAnimationFrame(lyricScrollFrameRef.current);
       lyricScrollFrameRef.current = null;
     };
-  }, [activeLyricIndex, activeTab]);
+  }, [activeLyricIndex, activeTab, showTranslatedLyrics]);
 
   const lastKnownChatIdRef = useRef(null);
 
@@ -2706,20 +2788,33 @@ export default function App() {
     }
   };
 
-  // Adicionar por Link Direto do YouTube
-  const handleAddCustomYoutubeUrl = (e) => {
+  // Adicionar por Link Direto do YouTube buscando o título e artista reais do vídeo
+  const handleAddCustomYoutubeUrl = async (e) => {
     e.preventDefault();
-    const extractedId = extractYouTubeId(searchQuery.trim());
+    const query = searchQuery.trim();
+    const extractedId = extractYouTubeId(query);
     if (!extractedId) return;
 
-    handleAddTrack({
-      videoId: extractedId,
-      title: `Faixa do YouTube (${extractedId})`,
-      artist: 'Link Direto',
-      duration: 'Ao vivo',
-      thumbnail: `https://i.ytimg.com/vi/${extractedId}/hqdefault.jpg`
-    });
-    setSearchQuery('');
+    // Se já foi encontrado nos resultados da busca
+    const existing = searchResults.find((item) => item.videoId === extractedId);
+    if (existing) {
+      handleAddTrack(existing);
+      setSearchQuery('');
+      setSearchResults([]);
+      return;
+    }
+
+    setIsSearching(true);
+    try {
+      const videoDetails = await fetchYouTubeVideoDetails(extractedId);
+      if (videoDetails) {
+        handleAddTrack(videoDetails);
+      }
+    } finally {
+      setIsSearching(false);
+      setSearchQuery('');
+      setSearchResults([]);
+    }
   };
 
   // Votar numa música da fila
@@ -3980,7 +4075,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActiveTab('lyrics')}
-                className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'lyrics'
+                className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'lyrics'
                   ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white shadow-md shadow-red-600/20'
                   : 'bg-zinc-950 text-zinc-400 hover:text-white'
                   }`}
@@ -3988,16 +4083,6 @@ export default function App() {
                 <Mic2 className="w-3.5 h-3.5" /> Letra (BetterLyrics)
               </button>
 
-              <button
-                type="button"
-                onClick={() => setActiveTab('translation')}
-                className={`px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'translation'
-                  ? 'bg-gradient-to-r from-amber-600 to-rose-600 text-white shadow-md shadow-amber-600/20'
-                  : 'bg-zinc-950 text-zinc-400 hover:text-white'
-                  }`}
-              >
-                <Languages className="w-3.5 h-3.5 text-amber-300" /> Tradução (BetterLyrics)
-              </button>
               <button
                 type="button"
                 onClick={() => setActiveTab('chat')}
@@ -4168,12 +4253,48 @@ export default function App() {
             </div>
           )}
 
-          {/* ABA 3: LETRAS SINCRONIZADAS ESTILO BETTERLYRICS */}
+          {/* ABA 3: LETRAS SINCRONIZADAS ESTILO BETTERLYRICS COM BOTÃO DE TRADUZIR */}
           {activeTab === 'lyrics' && (
             <div
               ref={lyricsContainerRef}
-              className="better-lyrics-scroll-area min-h-0 flex-1 overflow-y-auto overflow-x-hidden rounded-2xl border border-zinc-800/70 bg-gradient-to-b from-zinc-950/90 via-zinc-950/60 to-zinc-950/90 px-4 sm:px-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+              className="better-lyrics-scroll-area min-h-0 flex-1 overflow-y-auto overflow-x-hidden rounded-2xl border border-zinc-800/70 bg-gradient-to-b from-zinc-950/90 via-zinc-950/60 to-zinc-950/90 px-4 sm:px-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden relative"
             >
+              {/* Barra Superior da Aba Letras: Botão Traduzir e Seletor de Idioma */}
+              {roomState.playback.videoId && (lyricsData.synced.length > 0 || lyricsData.plain) && (
+                <div className="sticky top-2 z-20 mx-auto max-w-sm mb-3 flex items-center justify-between gap-2 p-1.5 px-3 rounded-2xl bg-zinc-900/95 backdrop-blur-md border border-zinc-800 shadow-xl">
+                  <button
+                    type="button"
+                    onClick={() => setShowTranslatedLyrics((prev) => !prev)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                      showTranslatedLyrics
+                        ? 'bg-gradient-to-r from-amber-500 to-rose-500 text-white shadow-md shadow-amber-500/20'
+                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white'
+                    }`}
+                    title={showTranslatedLyrics ? 'Ver letra original' : 'Traduzir letra com BetterLyrics'}
+                  >
+                    <Languages className="w-3.5 h-3.5 text-amber-300" />
+                    {showTranslatedLyrics ? 'Ver Original' : 'Traduzir Letra'}
+                  </button>
+
+                  {showTranslatedLyrics && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] text-zinc-400 font-medium hidden sm:inline">Idioma:</span>
+                      <select
+                        value={translationData.targetLang}
+                        onChange={(e) => setTranslationData((prev) => ({ ...prev, targetLang: e.target.value }))}
+                        className="bg-zinc-800 border border-zinc-700 text-zinc-200 text-xs rounded-xl px-2.5 py-1 focus:outline-none focus:border-amber-500 cursor-pointer font-medium"
+                      >
+                        {SUPPORTED_LANGUAGES.map((lang) => (
+                          <option key={lang.code} value={lang.code}>
+                            {lang.flag} {lang.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {!roomState.playback.videoId ? (
                 <div className="text-center py-16 text-zinc-500 flex flex-col items-center">
                   <Mic2 className="w-10 h-10 mb-2 opacity-40 text-red-400" />
@@ -4184,6 +4305,33 @@ export default function App() {
                   <Disc3 className="w-7 h-7 text-red-500 animate-spin" />
                   <span className="text-sm">Sincronizando letra de &ldquo;{roomState.playback.title}&rdquo;...</span>
                 </div>
+              ) : showTranslatedLyrics ? (
+                translationData.loading ? (
+                  <div className="text-center py-16 text-zinc-400 flex flex-col items-center gap-3">
+                    <Disc3 className="w-7 h-7 text-amber-500 animate-spin" />
+                    <span className="text-sm">Traduzindo letra via BetterLyrics para &ldquo;{roomState.playback.title}&rdquo;...</span>
+                  </div>
+                ) : translationData.synced.length > 0 ? (
+                  <SyncedTranslatedLyricsList
+                    lines={translationData.synced}
+                    activeIndex={activeLyricIndex}
+                    isHost={isHost}
+                    activeLineRef={activeLyricRef}
+                    seekRef={seekLyricRef}
+                  />
+                ) : translationData.plain ? (
+                  <div className="better-lyrics-plain mx-auto max-w-2xl whitespace-pre-line break-words px-4 text-center">
+                    <div className="mb-4 text-xs text-amber-400/90 bg-amber-950/40 border border-amber-800/50 rounded-xl px-3 py-2">
+                      Tradução estática da letra (esta faixa não possui marcação de tempo):
+                    </div>
+                    {translationData.plain}
+                  </div>
+                ) : (
+                  <div className="text-center py-16 text-zinc-500">
+                    <Languages className="w-8 h-8 mx-auto mb-2 opacity-40" />
+                    <p className="text-sm">{translationData.error || 'Tradução não disponível para esta música.'}</p>
+                  </div>
+                )
               ) : lyricsData.synced.length > 0 ? (
                 <SyncedLyricsList
                   lines={lyricsData.synced}
@@ -4203,65 +4351,6 @@ export default function App() {
                 <div className="text-center py-16 text-zinc-500">
                   <Mic2 className="w-8 h-8 mx-auto mb-2 opacity-40" />
                   <p className="text-sm">{lyricsData.error || 'Letra não encontrada para esta faixa.'}</p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* ABA 4: TRADUÇÃO DE LETRAS SINCRONIZADAS VIA BETTERLYRICS */}
-          {activeTab === 'translation' && (
-            <div
-              ref={translationContainerRef}
-              className="better-lyrics-scroll-area min-h-0 flex-1 overflow-y-auto overflow-x-hidden rounded-2xl border border-zinc-800/70 bg-gradient-to-b from-zinc-950/90 via-zinc-950/60 to-zinc-950/90 px-4 sm:px-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden relative"
-            >
-              {/* Barra de Seleção de Idioma para a Tradução */}
-              <div className="sticky top-2 z-20 mx-auto max-w-sm my-2 flex items-center justify-between gap-2 p-2 rounded-xl bg-zinc-900/90 backdrop-blur border border-zinc-800 shadow-lg">
-                <div className="flex items-center gap-1.5 text-xs font-bold text-zinc-300">
-                  <Languages className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Idioma de tradução:</span>
-                </div>
-                <select
-                  value={translationData.targetLang}
-                  onChange={(e) => setTranslationData((prev) => ({ ...prev, targetLang: e.target.value }))}
-                  className="bg-zinc-800 border border-zinc-700 text-zinc-200 text-xs rounded-lg px-2.5 py-1 focus:outline-none focus:border-amber-500 cursor-pointer font-medium"
-                >
-                  {SUPPORTED_LANGUAGES.map((lang) => (
-                    <option key={lang.code} value={lang.code}>
-                      {lang.flag} {lang.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {!roomState.playback.videoId ? (
-                <div className="text-center py-16 text-zinc-500 flex flex-col items-center">
-                  <Languages className="w-10 h-10 mb-2 opacity-40 text-amber-400" />
-                  <p className="text-sm">Escolha uma música para ver a tradução da letra aqui!</p>
-                </div>
-              ) : lyricsData.loading || translationData.loading ? (
-                <div className="text-center py-16 text-zinc-400 flex flex-col items-center gap-3">
-                  <Disc3 className="w-7 h-7 text-amber-500 animate-spin" />
-                  <span className="text-sm">Traduzindo letra via BetterLyrics para &ldquo;{roomState.playback.title}&rdquo;...</span>
-                </div>
-              ) : translationData.synced.length > 0 ? (
-                <SyncedTranslatedLyricsList
-                  lines={translationData.synced}
-                  activeIndex={activeLyricIndex}
-                  isHost={isHost}
-                  activeLineRef={activeTranslationLyricRef}
-                  seekRef={seekLyricRef}
-                />
-              ) : translationData.plain ? (
-                <div className="better-lyrics-plain mx-auto max-w-2xl whitespace-pre-line break-words px-4 text-center">
-                  <div className="mb-4 text-xs text-amber-400/90 bg-amber-950/40 border border-amber-800/50 rounded-xl px-3 py-2">
-                    Tradução estática da letra (esta faixa não possui marcação de tempo):
-                  </div>
-                  {translationData.plain}
-                </div>
-              ) : (
-                <div className="text-center py-16 text-zinc-500">
-                  <Languages className="w-8 h-8 mx-auto mb-2 opacity-40" />
-                  <p className="text-sm">{translationData.error || lyricsData.error || 'Tradução não disponível para esta música.'}</p>
                 </div>
               )}
             </div>
