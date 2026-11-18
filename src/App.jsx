@@ -3905,10 +3905,10 @@ export default function App() {
                 window.prompt('Copie o link do convite:', inviteUrl.toString());
               }
             }}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold transition cursor-pointer"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer bg-zinc-100 hover:bg-zinc-200 text-zinc-800 dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-200 border border-zinc-300 dark:border-zinc-700/60"
           >
             {copied ? (
-              <Check className="w-3.5 h-3.5 text-emerald-400" />
+              <Check className="w-3.5 h-3.5 text-emerald-500" />
             ) : (
               <Share2 className="w-3.5 h-3.5" />
             )}
@@ -3918,7 +3918,7 @@ export default function App() {
           <button
             onClick={leaveRoom}
             title={isHost ? 'Sair da sala (mantém a sala aberta para retorno)' : 'Sair da sala'}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-800 text-xs font-semibold transition cursor-pointer"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer bg-zinc-100 hover:bg-zinc-200 text-zinc-600 hover:text-zinc-900 dark:bg-zinc-900 dark:hover:bg-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200 border border-zinc-300 dark:border-zinc-800"
           >
             <LogOut className="w-3.5 h-3.5" />
             Sair
@@ -3928,7 +3928,7 @@ export default function App() {
             <button
               onClick={deleteRoom}
               title="Excluir sala permanentemente para todos"
-              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-red-950/40 hover:bg-red-900/60 text-red-400 hover:text-red-200 border border-red-900/50 text-xs font-semibold transition cursor-pointer"
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 dark:bg-red-950/40 dark:hover:bg-red-900/60 dark:text-red-400 dark:border-red-900/50"
             >
               <Trash2 className="w-3.5 h-3.5" />
               Excluir Sala
@@ -4093,8 +4093,8 @@ export default function App() {
                   onClick={handleVoteSkipTrack}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition cursor-pointer ${
                     (roomState.playback.skipVoters || []).includes(userId)
-                      ? 'bg-amber-950/70 border-amber-500/70 text-amber-300 hover:bg-amber-900/80'
-                      : 'bg-zinc-800/90 hover:bg-zinc-700/90 border-zinc-700/70 text-zinc-300 hover:text-white'
+                      ? 'bg-amber-500/15 hover:bg-amber-500/25 border-amber-500/50 text-amber-600 dark:bg-amber-950/70 dark:hover:bg-amber-900/80 dark:border-amber-500/70 dark:text-amber-300'
+                      : 'bg-zinc-100 hover:bg-zinc-200 border-zinc-300 text-zinc-700 hover:text-zinc-900 dark:bg-zinc-800/90 dark:hover:bg-zinc-700/90 dark:border-zinc-700/70 dark:text-zinc-300 dark:hover:text-white'
                   }`}
                   title={
                     (roomState.playback.skipVoters || []).includes(userId)
@@ -4102,11 +4102,11 @@ export default function App() {
                       : 'Votar democraticamente para pular esta música (quando a maioria votar, inicia timer de 30s)'
                   }
                 >
-                  <ThumbsDown className={`w-3.5 h-3.5 ${(roomState.playback.skipVoters || []).includes(userId) ? 'text-amber-400' : 'text-zinc-400'}`} />
+                  <ThumbsDown className={`w-3.5 h-3.5 ${(roomState.playback.skipVoters || []).includes(userId) ? 'text-amber-500 dark:text-amber-400' : 'text-zinc-500 dark:text-zinc-400'}`} />
                   <span>
                     {(roomState.playback.skipVoters || []).includes(userId) ? 'Votado p/ pular' : 'Pular'}
                   </span>
-                  <span className="px-1.5 py-0.5 rounded-full bg-zinc-950/80 text-[10px] font-mono text-zinc-300">
+                  <span className="px-1.5 py-0.5 rounded-full bg-zinc-200 text-zinc-700 dark:bg-zinc-950/80 dark:text-zinc-300 text-[10px] font-mono">
                     {(roomState.playback.skipVoters || []).length}/{getMajorityCount((roomState.members || []).length || 1)}
                   </span>
                 </button>
@@ -4146,43 +4146,70 @@ export default function App() {
               onClick={handleResyncPlayer}
               disabled={!roomState.playback.videoId || isResyncingPlayer}
               title="Recarregar a música atual e sincronizar este player com a sala"
-              className="mt-3 flex self-end items-center gap-1.5 rounded-xl border border-zinc-700 bg-zinc-950/80 px-3 py-2 text-xs font-semibold text-zinc-300 transition hover:border-red-500/60 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+              className="mt-3 flex self-end items-center gap-1.5 rounded-xl border border-zinc-300 dark:border-zinc-700 bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-950/80 dark:hover:bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-700 dark:text-zinc-300 transition hover:border-red-500/60 hover:text-red-500 dark:hover:text-white disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${isResyncingPlayer ? 'animate-spin text-red-400' : ''}`} />
               {isResyncingPlayer ? 'Sincronizando...' : 'Sincronizar player'}
             </button>
           </div>
 
-          {/* Lista de Participantes com Fotos Fofas Aleatórias */}
-          <div className="bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-3xl p-4 shadow-xl flex-1 min-h-[130px] flex flex-col overflow-hidden">
-            <h4 className="shrink-0 text-xs font-semibold uppercase tracking-wider text-zinc-400 mb-2.5 flex items-center gap-1.5">
-              <Users className="w-4 h-4 text-red-500" /> Galera na Party ({(roomState.members || []).length})
+          {/* Lista de Participantes com Fotos Fofas Aleatórias e Status Online */}
+          <div className="bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-3xl p-4 sm:p-5 shadow-xl flex-1 min-h-[140px] flex flex-col overflow-hidden">
+            <h4 className="shrink-0 text-xs font-bold uppercase tracking-wider text-zinc-400 mb-3 flex items-center justify-between">
+              <span className="flex items-center gap-1.5">
+                <Users className="w-4 h-4 text-red-500" /> Galera na Party ({(roomState.members || []).length})
+              </span>
+              <span className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-500">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> online
+              </span>
             </h4>
-            <div className="flex-1 min-h-0 overflow-y-auto pr-1 flex flex-wrap content-start gap-2.5">
+            <div className="flex-1 min-h-0 overflow-y-auto pt-2 pb-2 pr-1 flex flex-wrap content-start gap-2.5 sm:gap-3">
               {(roomState.members || []).map((m) => {
                 const isSelf = m.id === userId;
                 return (
                   <div
                     key={m.id}
-                    className={`pl-1.5 pr-3 py-1 rounded-full text-xs bg-zinc-950 border flex items-center gap-2 shadow-sm ${
-                      isSelf ? 'border-red-500/60 bg-red-950/20' : 'border-zinc-800'
+                    className={`group relative pl-2 pr-3.5 py-1.5 rounded-2xl text-xs sm:text-sm border flex items-center gap-2.5 shadow-sm transition-all hover:scale-[1.02] ${
+                      isSelf
+                        ? 'border-red-500/60 bg-red-500/10 dark:bg-red-950/25 text-red-600 dark:text-red-200'
+                        : 'border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-950 text-zinc-800 dark:text-zinc-200'
                     }`}
                   >
-                    <img
-                      src={m.avatar || getRandomCuteAvatar(m.name)}
-                      alt={m.name}
-                      className="w-6 h-6 rounded-full bg-zinc-800 object-cover border border-red-500/40"
-                    />
-                    <span className="font-medium text-zinc-200">
-                      {m.name} {isSelf && <span className="text-[10px] text-red-400 font-semibold">(Você)</span>}
-                    </span>
-                    {m.isHost && <Crown className="w-3.5 h-3.5 text-amber-400" />}
+                    {/* Avatar ampliado com badge pulsante de status online */}
+                    <div className="relative shrink-0">
+                      <img
+                        src={m.avatar || getRandomCuteAvatar(m.name)}
+                        alt={m.name}
+                        className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-zinc-800 object-cover border-2 border-red-500/40 shadow-sm"
+                      />
+                      <span
+                        className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-zinc-950 border border-emerald-300"
+                        title="Online na festa"
+                      />
+                    </div>
+
+                    <div className="flex flex-col min-w-0">
+                      <div className="flex items-center gap-1.5 leading-tight">
+                        <span className="font-semibold truncate max-w-[120px] sm:max-w-[150px]">
+                          {m.name}
+                        </span>
+                        {m.isHost && (
+                          <Crown className="w-3.5 h-3.5 text-amber-500 shrink-0" title="Anfitrião da Party" />
+                        )}
+                      </div>
+                      {isSelf && (
+                        <span className="text-[10px] font-bold text-red-500 dark:text-red-400 leading-none mt-0.5">
+                          (Você)
+                        </span>
+                      )}
+                    </div>
+
                     {isSelf && (
                       <button
                         type="button"
-                        title="Alterar seu nome nesta sala"
+                        title="Alterar seu apelido nesta sala"
                         onClick={handleOpenEditName}
-                        className="text-zinc-400 hover:text-white transition cursor-pointer ml-0.5"
+                        className="text-zinc-400 hover:text-red-500 dark:hover:text-white transition cursor-pointer ml-0.5 p-1 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-800"
                       >
                         <Pencil className="w-3 h-3" />
                       </button>
@@ -4192,7 +4219,7 @@ export default function App() {
                         type="button"
                         title={`Remover ${m.name} da party`}
                         onClick={() => handleHostProcessGuestAction({ type: 'KICK_MEMBER', userId: m.id, senderId: userId })}
-                        className="text-zinc-500 hover:text-red-400 transition cursor-pointer"
+                        className="text-zinc-400 hover:text-red-500 transition cursor-pointer ml-0.5 p-1 rounded-lg hover:bg-red-500/10"
                       >
                         <UserX className="w-3.5 h-3.5" />
                       </button>
@@ -4213,7 +4240,7 @@ export default function App() {
                 onClick={() => setActiveTab('search')}
                 className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'search'
                   ? 'bg-red-600 text-white shadow-md shadow-red-600/20'
-                  : 'bg-zinc-950 text-zinc-400 hover:text-white'
+                  : 'bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-950 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white border border-zinc-200 dark:border-zinc-800'
                   }`}
               >
                 <Search className="w-3.5 h-3.5" /> Buscar Música
@@ -4224,7 +4251,7 @@ export default function App() {
                 onClick={() => setActiveTab('queue')}
                 className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'queue'
                   ? 'bg-red-600 text-white shadow-md shadow-red-600/20'
-                  : 'bg-zinc-950 text-zinc-400 hover:text-white'
+                  : 'bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-950 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white border border-zinc-200 dark:border-zinc-800'
                   }`}
               >
                 <ListMusic className="w-3.5 h-3.5" /> Playlist ({roomState.playlist?.length ?? roomState.queue.length})
@@ -4235,7 +4262,7 @@ export default function App() {
                 onClick={() => setActiveTab('lyrics')}
                 className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'lyrics'
                   ? 'bg-gradient-to-r from-red-600 to-amber-600 text-white shadow-md shadow-red-600/20'
-                  : 'bg-zinc-950 text-zinc-400 hover:text-white'
+                  : 'bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-950 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white border border-zinc-200 dark:border-zinc-800'
                   }`}
               >
                 <Mic2 className="w-3.5 h-3.5" /> Letra (BetterLyrics)
@@ -4246,7 +4273,7 @@ export default function App() {
                 onClick={() => setActiveTab('chat')}
                 className={`relative px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${activeTab === 'chat'
                   ? 'bg-red-600 text-white shadow-md shadow-red-600/20'
-                  : 'bg-zinc-950 text-zinc-400 hover:text-white'
+                  : 'bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-950 text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white border border-zinc-200 dark:border-zinc-800'
                   }`}
               >
                 <MessageCircle className="w-3.5 h-3.5" /> Chat ({roomState.chat?.length || 0})
@@ -4415,32 +4442,32 @@ export default function App() {
           {activeTab === 'lyrics' && (
             <div
               ref={lyricsContainerRef}
-              className="better-lyrics-scroll-area min-h-0 flex-1 overflow-y-auto overflow-x-hidden rounded-2xl border border-zinc-800/70 bg-gradient-to-b from-zinc-950/90 via-zinc-950/60 to-zinc-950/90 px-4 sm:px-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden relative"
+              className="better-lyrics-scroll-area min-h-0 flex-1 overflow-y-auto overflow-x-hidden rounded-2xl border border-zinc-200/80 dark:border-zinc-800/70 bg-gradient-to-b from-white/95 via-zinc-50/80 to-white/95 dark:from-zinc-950/90 dark:via-zinc-950/60 dark:to-zinc-950/90 px-4 sm:px-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden relative transition-colors"
             >
               {/* Barra Superior da Aba Letras: Botão Traduzir e Seletor de Idioma */}
               {roomState.playback.videoId && (lyricsData.synced.length > 0 || lyricsData.plain) && (
-                <div className="sticky top-2 z-20 mx-auto max-w-sm mb-3 flex items-center justify-between gap-2 p-1.5 px-3 rounded-2xl bg-zinc-900/95 backdrop-blur-md border border-zinc-800 shadow-xl">
+                <div className="sticky top-2 z-20 mx-auto max-w-sm mb-3 flex items-center justify-between gap-2 p-1.5 px-3 rounded-2xl bg-white/90 dark:bg-zinc-900/95 backdrop-blur-md border border-zinc-200 dark:border-zinc-800 shadow-md">
                   <button
                     type="button"
                     onClick={() => setShowTranslatedLyrics((prev) => !prev)}
                     className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
                       showTranslatedLyrics
                         ? 'bg-gradient-to-r from-amber-500 to-rose-500 text-white shadow-md shadow-amber-500/20'
-                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white'
+                        : 'bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white border border-zinc-300 dark:border-zinc-700'
                     }`}
                     title={showTranslatedLyrics ? 'Ver letra original' : 'Traduzir letra com BetterLyrics'}
                   >
-                    <Languages className="w-3.5 h-3.5 text-amber-300" />
+                    <Languages className="w-3.5 h-3.5 text-amber-500 dark:text-amber-300" />
                     {showTranslatedLyrics ? 'Ver Original' : 'Traduzir Letra'}
                   </button>
 
                   {showTranslatedLyrics && (
                     <div className="flex items-center gap-1.5">
-                      <span className="text-[11px] text-zinc-400 font-medium hidden sm:inline">Idioma:</span>
+                      <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-medium hidden sm:inline">Idioma:</span>
                       <select
                         value={translationData.targetLang}
                         onChange={(e) => setTranslationData((prev) => ({ ...prev, targetLang: e.target.value }))}
-                        className="bg-zinc-800 border border-zinc-700 text-zinc-200 text-xs rounded-xl px-2.5 py-1 focus:outline-none focus:border-amber-500 cursor-pointer font-medium"
+                        className="bg-zinc-50 dark:bg-zinc-800 border border-zinc-300 dark:border-zinc-700 text-zinc-800 dark:text-zinc-200 text-xs rounded-xl px-2.5 py-1 focus:outline-none focus:border-amber-500 cursor-pointer font-medium"
                       >
                         {SUPPORTED_LANGUAGES.map((lang) => (
                           <option key={lang.code} value={lang.code}>
@@ -4479,7 +4506,7 @@ export default function App() {
                   />
                 ) : translationData.plain ? (
                   <div className="better-lyrics-plain mx-auto max-w-2xl whitespace-pre-line break-words px-4 text-center">
-                    <div className="mb-4 text-xs text-amber-400/90 bg-amber-950/40 border border-amber-800/50 rounded-xl px-3 py-2">
+                    <div className="mb-4 text-xs font-semibold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/50 rounded-xl px-3 py-2">
                       Tradução estática da letra (esta faixa não possui marcação de tempo):
                     </div>
                     {translationData.plain}
@@ -4500,7 +4527,7 @@ export default function App() {
                 />
               ) : lyricsData.plain ? (
                 <div className="better-lyrics-plain mx-auto max-w-2xl whitespace-pre-line break-words px-4 text-center">
-                  <div className="mb-4 text-xs text-amber-400/90 bg-amber-950/40 border border-amber-800/50 rounded-xl px-3 py-2">
+                  <div className="mb-4 text-xs font-semibold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/50 rounded-xl px-3 py-2">
                     Letra estática (esta faixa não possui marcação de tempo linha a linha):
                   </div>
                   {lyricsData.plain}
