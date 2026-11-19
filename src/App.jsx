@@ -517,13 +517,14 @@ function NewsPanel({ onClose }) {
           <h2 className="flex items-center gap-2 text-lg font-bold"><Bell className="h-5 w-5 text-amber-400" /> Novidades</h2>
           <button onClick={onClose} className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white" aria-label="Fechar novidades"><X className="h-5 w-5" /></button>
         </div>
-        <ul className="space-y-3 text-sm text-zinc-300">
-          <li>• Votação democrática para pular música: quando a maioria vota, inicia um timer de 30 segundos até avançar.</li>
-          <li>• O administrador da sala pode avançar/retroceder qualquer vídeo para o momento que quiser pela barra do YouTube ou do player.</li>
-          <li>• Usuários e administrador podem alterar seus nomes dentro da sala e retornar usando o nome anterior.</li>
-          <li>• Fila sem duplicatas, com remoção controlada e votos únicos.</li>
-          <li>• Chat com emojis, GIFs do Tenor e histórico limitado a 50 mensagens.</li>
-          <li>• Avatares personalizados, incluindo imagem do seu dispositivo.</li>
+        <ul className="max-h-[65vh] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden space-y-2.5 text-sm text-zinc-300">
+          <li>• <strong>Enquete de Tema no Chat:</strong> qualquer participante pode criar uma enquete (pelo chat ou pelo botão no topo) para votar no próximo tema da party, e o anfitrião pode aplicar o tema vencedor com um clique.</li>
+          <li>• <strong>Temas e Descrição da Festa:</strong> sugestões temáticas ao criar ou editar a sala, além de uma descrição opcional visível para todos os participantes (com playlist sempre livre).</li>
+          <li>• <strong>Limpar Playlist (Anfitrião):</strong> botão exclusivo para o administrador limpar toda a lista de músicas da playlist mantendo a faixa atual tocando.</li>
+          <li>• <strong>Controle de Sincronia e Tradução de Letras:</strong> botões <code>-0.5s</code> / <code>+0.5s</code> para ajustar a velocidade da letra, seletor de idioma sempre visível (Original ou traduzido) e sincronização aprimorada.</li>
+          <li>• <strong>Convite Personalizado:</strong> o botão Convidar agora copia uma mensagem pronta com nome da party, música atual, PIN e link direto.</li>
+          <li>• <strong>Layout Adaptativo e Performance:</strong> cards responsivos sem barras de rolagem visíveis, controles adaptados em telas menores e renderização muito mais leve no navegador.</li>
+          <li>• Votação democrática para pular música (timer de 30s), controle da barra de progresso pelo anfitrião, chat com emojis/GIFs do Tenor e avatares personalizados.</li>
         </ul>
       </div>
     </div>
@@ -975,6 +976,17 @@ const SyncedTranslatedLyricsList = React.memo(function SyncedTranslatedLyricsLis
   previous.activeLineRef === next.activeLineRef && previous.seekRef === next.seekRef
 );
 
+const PARTY_THEME_SUGGESTIONS = [
+  { name: 'Party dos anos 80', description: 'Clássicos oitentistas, synthpop e nostalgia pura — adicione o que quiser!' },
+  { name: 'Retorno aos anos 2000', description: 'Hits marcantes dos anos 2000, pop e nostalgia — playlist livre!' },
+  { name: 'Dia de Rock', description: 'Do rock clássico ao alternativo — solte suas guitarras favoritas!' },
+  { name: 'Emo Era', description: 'Hinos emo e pop punk para cantar junto — mas vale qualquer estilo!' },
+  { name: 'Embalos de Sábado à Noite', description: 'Disco, dance e batidas para animar a pista!' },
+  { name: 'Festa Pop', description: 'Os maiores hits pop de ontem e de hoje — todos são livres para escolher!' },
+  { name: 'Sexta Indie & Alt', description: 'Indie, alternativo e boas descobertas musicais.' },
+  { name: 'Brasilidades & MPB', description: 'MPB, samba, pagode e clássicos nacionais para curtir junto.' }
+];
+
 export default function App() {
   // Identidade e Avatar Fofo aleatório do usuário (persistidos para manter identidade do admin e convidados)
   const [userId] = useState(() => {
@@ -1023,6 +1035,9 @@ export default function App() {
   const [editingModalFocus, setEditingModalFocus] = useState('room'); // 'room' | 'name'
   const [editingNameInput, setEditingNameInput] = useState('');
   const [editingRoomNameInput, setEditingRoomNameInput] = useState('');
+  const [editingRoomDescriptionInput, setEditingRoomDescriptionInput] = useState('');
+  const [showPollCreator, setShowPollCreator] = useState(false);
+  const [pollOptionsInput, setPollOptionsInput] = useState(['Party dos anos 80', 'Dia de Rock']);
   const [editingRoomIconInput, setEditingRoomIconInput] = useState('');
   const [roomIconInput, setRoomIconInput] = useState(() => getRandomCuteAvatar('party_room_' + Math.random().toString(36).substring(2, 8)));
   const roomIconFileInputRef = useRef(null);
@@ -1060,7 +1075,8 @@ export default function App() {
 
   // Dados de criação / entrada na sala
   const [mode, setMode] = useState(() => new URLSearchParams(window.location.search).has('room') ? 'join' : 'create'); // 'create' | 'join'
-  const [roomNameInput, setRoomNameInput] = useState('Sexta Indie & Pop');
+  const [roomNameInput, setRoomNameInput] = useState('Party dos anos 80');
+  const [roomDescriptionInput, setRoomDescriptionInput] = useState('');
   const [roomCodeInput, setRoomCodeInput] = useState(() => new URLSearchParams(window.location.search).get('room') || '');
   const [pinInput, setPinInput] = useState(() => new URLSearchParams(window.location.search).get('pin') || '1234');
   const [errorMsg, setErrorMsg] = useState('');
@@ -1599,10 +1615,14 @@ export default function App() {
     } else if (action.type === 'RENAME_ROOM') {
       const cleanName = action.newName ? String(action.newName).trim().slice(0, 50) : currentRoom.roomName;
       const nextIcon = action.newIcon !== undefined ? action.newIcon : currentRoom.roomIcon;
+      const nextDescription = action.newDescription !== undefined
+        ? String(action.newDescription || '').trim().slice(0, 140)
+        : (currentRoom.roomDescription || '');
       broadcastRoomState({
         ...currentRoom,
         roomName: cleanName,
-        roomIcon: nextIcon
+        roomIcon: nextIcon,
+        roomDescription: nextDescription
       });
     } else if (action.type === 'USER_JOINED') {
       if (!action.member || !action.member.id) return;
@@ -1691,13 +1711,87 @@ export default function App() {
       });
     } else if (action.type === 'CLEAR_QUEUE') {
       if (action.senderId !== currentRoom.hostId) return;
-      const queuedCount = (currentRoom.queue || []).length;
-      const playlistQueuedCount = (currentRoom.playlist || []).filter((track) => track.status === 'queued').length;
-      if (queuedCount === 0 && playlistQueuedCount === 0) return;
+      if (!(currentRoom.queue || []).length && !(currentRoom.playlist || []).length) return;
       broadcastRoomState({
         ...currentRoom,
         queue: [],
-        playlist: (currentRoom.playlist || []).filter((track) => track.status !== 'queued')
+        playlist: []
+      });
+    } else if (action.type === 'CREATE_THEME_POLL') {
+      const cleanOptions = (action.options || [])
+        .map((opt) => String(opt || '').trim().slice(0, 50))
+        .filter(Boolean)
+        .filter((val, idx, arr) => arr.findIndex((x) => x.toLowerCase() === val.toLowerCase()) === idx)
+        .slice(0, 4);
+      if (cleanOptions.length < 2) return;
+      const sender = (currentRoom.members || []).find((m) => m.id === action.senderId);
+      const creatorName = String(sender?.name || action.senderName || 'Convidado').slice(0, 32);
+      const poll = {
+        id: `poll_${Date.now()}`,
+        createdBy: creatorName,
+        createdById: action.senderId,
+        createdAt: Date.now(),
+        options: cleanOptions.map((label, idx) => {
+          const preset = PARTY_THEME_SUGGESTIONS.find((t) => t.name.toLowerCase() === label.toLowerCase());
+          return {
+            id: `opt_${idx}_${Date.now()}`,
+            label,
+            description: preset?.description || '',
+            voters: []
+          };
+        })
+      };
+      const chatMessages = [...(currentRoom.chat || []), {
+        id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        senderId: 'system',
+        senderName: 'Party Together',
+        type: 'text',
+        text: `📊 ${creatorName} criou uma enquete para mudar o tema da party! Vote no topo do chat.`
+      }].slice(-MAX_CHAT_MESSAGES);
+      broadcastRoomState({
+        ...currentRoom,
+        themePoll: poll,
+        chat: chatMessages
+      });
+    } else if (action.type === 'VOTE_THEME_POLL') {
+      const poll = currentRoom.themePoll;
+      if (!poll || !action.senderId || !action.optionId) return;
+      const nextOptions = (poll.options || []).map((opt) => {
+        const votersWithoutUser = (opt.voters || []).filter((id) => id !== action.senderId);
+        if (opt.id === action.optionId) {
+          const alreadyVotedHere = (opt.voters || []).includes(action.senderId);
+          return { ...opt, voters: alreadyVotedHere ? votersWithoutUser : [...votersWithoutUser, action.senderId] };
+        }
+        return { ...opt, voters: votersWithoutUser };
+      });
+      broadcastRoomState({
+        ...currentRoom,
+        themePoll: { ...poll, options: nextOptions }
+      });
+    } else if (action.type === 'APPLY_THEME_POLL') {
+      if (action.senderId !== currentRoom.hostId || !currentRoom.themePoll) return;
+      const chosen = (currentRoom.themePoll.options || []).find((opt) => opt.id === action.optionId);
+      if (!chosen) return;
+      const chatMessages = [...(currentRoom.chat || []), {
+        id: `sys_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        senderId: 'system',
+        senderName: 'Party Together',
+        type: 'text',
+        text: `🎉 O tema da party foi atualizado para "${chosen.label}" com base na enquete!`
+      }].slice(-MAX_CHAT_MESSAGES);
+      broadcastRoomState({
+        ...currentRoom,
+        roomName: chosen.label,
+        roomDescription: chosen.description || currentRoom.roomDescription || '',
+        themePoll: null,
+        chat: chatMessages
+      });
+    } else if (action.type === 'CLOSE_THEME_POLL') {
+      if (!currentRoom.themePoll) return;
+      if (action.senderId !== currentRoom.hostId && action.senderId !== currentRoom.themePoll.createdById) return;
+      broadcastRoomState({
+        ...currentRoom,
+        themePoll: null
       });
     } else if (action.type === 'KICK_MEMBER') {
       if (action.senderId !== currentRoom.hostId || action.userId === currentRoom.hostId) return;
@@ -2508,6 +2602,7 @@ export default function App() {
     const newRoom = {
       roomId: generatedRoomId,
       roomName: roomNameInput.trim() || 'Sessão Party Together',
+      roomDescription: roomDescriptionInput.trim().slice(0, 140),
       roomIcon: roomIconInput || null,
       pinCode: pinInput.trim() || '1234',
       hostId: userId,
@@ -3010,10 +3105,51 @@ export default function App() {
 
   const handleClearQueue = () => {
     if (!isHostRef.current) return;
-    const queuedCount = (roomStateRef.current?.queue || []).length;
-    if (queuedCount === 0) return;
-    if (!window.confirm(`Tem certeza de que deseja limpar a fila (${queuedCount} ${queuedCount === 1 ? 'música' : 'músicas'})? A música atual continuará tocando.`)) return;
+    const totalCount = (roomStateRef.current?.playlist || roomStateRef.current?.queue || []).length;
+    if (totalCount === 0) return;
+    if (!window.confirm(`Tem certeza de que deseja limpar toda a playlist (${totalCount} ${totalCount === 1 ? 'música' : 'músicas'})? A música atual continuará tocando.`)) return;
     handleHostProcessGuestAction({ type: 'CLEAR_QUEUE', senderId: userId });
+  };
+
+  const handleCreateThemePoll = (e) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const validOptions = pollOptionsInput.map((o) => o.trim()).filter(Boolean);
+    if (validOptions.length < 2) return;
+    const action = {
+      type: 'CREATE_THEME_POLL',
+      senderId: userId,
+      senderName: username,
+      options: validOptions
+    };
+    if (isHostRef.current) {
+      handleHostProcessGuestAction(action);
+    } else {
+      syncServiceRef.current?.sendAction(action);
+    }
+    setShowPollCreator(false);
+  };
+
+  const handleVoteThemePoll = (optionId) => {
+    const action = { type: 'VOTE_THEME_POLL', senderId: userId, optionId };
+    if (isHostRef.current) {
+      handleHostProcessGuestAction(action);
+    } else {
+      syncServiceRef.current?.sendAction(action);
+    }
+  };
+
+  const handleApplyThemePoll = (optionId) => {
+    if (!isHostRef.current) return;
+    handleHostProcessGuestAction({ type: 'APPLY_THEME_POLL', senderId: userId, optionId });
+  };
+
+  const handleCloseThemePoll = () => {
+    const action = { type: 'CLOSE_THEME_POLL', senderId: userId };
+    if (isHostRef.current) {
+      handleHostProcessGuestAction(action);
+    } else {
+      syncServiceRef.current?.sendAction(action);
+    }
   };
 
   const handleAvatarFileChange = async (event) => {
@@ -3287,6 +3423,7 @@ export default function App() {
   const handleOpenEditRoomName = () => {
     setEditingNameInput(username);
     setEditingRoomNameInput(roomState?.roomName || '');
+    setEditingRoomDescriptionInput(roomState?.roomDescription || '');
     setEditingRoomIconInput(roomState?.roomIcon || '');
     setEditingModalFocus('room');
     setIsEditingModalOpen(true);
@@ -3296,16 +3433,19 @@ export default function App() {
     if (e && e.preventDefault) e.preventDefault();
 
     const cleanRoomName = editingRoomNameInput.trim().slice(0, 50);
+    const cleanRoomDescription = editingRoomDescriptionInput.trim().slice(0, 140);
     const cleanUserName = editingNameInput.trim().slice(0, 32);
     const cleanRoomIcon = editingRoomIconInput || null;
 
     const oldRoomName = roomState?.roomName || '';
+    const oldRoomDescription = roomState?.roomDescription || '';
     const oldRoomIcon = roomState?.roomIcon || null;
     const oldUserName = username;
 
     const roomNameChanged = cleanRoomName && cleanRoomName !== oldRoomName;
+    const roomDescriptionChanged = cleanRoomDescription !== oldRoomDescription;
     const roomIconChanged = cleanRoomIcon !== oldRoomIcon;
-    const roomChanged = roomNameChanged || roomIconChanged;
+    const roomChanged = roomNameChanged || roomDescriptionChanged || roomIconChanged;
     const userChanged = cleanUserName && cleanUserName !== oldUserName;
 
     if (!roomChanged && !userChanged) {
@@ -3349,6 +3489,7 @@ export default function App() {
         const nextRoom = {
           ...roomStateRef.current,
           roomName: finalRoomName,
+          roomDescription: cleanRoomDescription,
           roomIcon: cleanRoomIcon
         };
         broadcastRoomState(nextRoom);
@@ -3359,7 +3500,7 @@ export default function App() {
             senderId: 'system',
             senderName: 'Party Together',
             type: 'text',
-            text: `🏷️ Os dados da party (nome/ícone) foram atualizados para "${finalRoomName}".`
+            text: `🏷️ Os dados da party foram atualizados para "${finalRoomName}".`
           }
         });
       } else {
@@ -3367,6 +3508,7 @@ export default function App() {
           type: 'RENAME_ROOM',
           senderId: userId,
           newName: finalRoomName,
+          newDescription: cleanRoomDescription,
           newIcon: cleanRoomIcon,
           oldName: oldRoomName
         });
@@ -3732,6 +3874,48 @@ export default function App() {
                     className="hidden"
                   />
                 </div>
+
+                {/* Sugestões de temas para a festa */}
+                <div className="mt-2.5">
+                  <span className="text-[11px] text-zinc-400 font-medium block mb-1.5">
+                    Sugestões de tema (opcional):
+                  </span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {PARTY_THEME_SUGGESTIONS.map((themeItem) => (
+                      <button
+                        key={themeItem.name}
+                        type="button"
+                        onClick={() => {
+                          setRoomNameInput(themeItem.name);
+                          setRoomDescriptionInput(themeItem.description);
+                        }}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition cursor-pointer border ${
+                          roomNameInput === themeItem.name
+                            ? 'bg-red-600/25 text-red-300 border-red-500/60'
+                            : 'bg-zinc-950/70 hover:bg-zinc-800 text-zinc-300 border-zinc-800'
+                        }`}
+                      >
+                        {themeItem.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Descrição opcional do tema da festa */}
+                <div className="mt-3">
+                  <label className="block text-xs font-medium text-zinc-400 mb-1 flex items-center justify-between">
+                    <span>Descrição da Festa (opcional)</span>
+                    <span className="text-[10px] text-zinc-500 font-mono">{roomDescriptionInput.length}/140</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={roomDescriptionInput}
+                    onChange={(e) => setRoomDescriptionInput(e.target.value)}
+                    placeholder="Ex: Tema livre, mas hoje estamos na vibe dos anos 80!"
+                    maxLength={140}
+                    className="w-full px-3.5 py-2 bg-zinc-950/90 border border-zinc-800 rounded-xl text-xs focus:outline-none focus:border-red-500"
+                  />
+                </div>
               </div>
             ) : isDirectInvite ? (
               <div className="rounded-xl border border-zinc-800 bg-zinc-950/70 px-3.5 py-3 text-xs text-zinc-300">
@@ -3868,10 +4052,29 @@ export default function App() {
               <span>•</span>
               <span>{(roomState.members || []).length} na festa</span>
             </p>
+            {roomState.roomDescription && (
+              <p className="text-[11px] font-medium text-amber-600 dark:text-amber-300/90 mt-0.5 line-clamp-2 max-w-md" title={roomState.roomDescription}>
+                ✨ {roomState.roomDescription}
+              </p>
+            )}
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setActiveTab('chat');
+              if (!roomState?.themePoll) {
+                setShowPollCreator(true);
+              }
+            }}
+            title="Criar ou votar em uma enquete para mudar o tema da party"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold transition cursor-pointer bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-amber-600 dark:text-amber-300 border border-zinc-200 dark:border-zinc-700/60 shadow-sm"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Enquete</span>
+          </button>
           <button
             onClick={handleInstallApp}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold cursor-pointer transition bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 border border-zinc-200 dark:border-transparent shadow-sm"
@@ -4437,19 +4640,19 @@ export default function App() {
           {/* ABA 2: PLAYLIST DA FESTA (MANTÉM AS FAIXAS ATÉ O FIM DA SESSÃO) */}
           {activeTab === 'queue' && (
             <div className="min-h-0 flex-1 flex flex-col">
-              {isHost && (roomState.queue?.length || 0) > 0 && (
+              {isHost && playlistToDisplay.length > 0 && (
                 <div className="mb-3 flex items-center justify-between border-b border-zinc-800 pb-2.5">
                   <span className="text-xs text-zinc-400">
-                    {roomState.queue.length} {roomState.queue.length === 1 ? 'música na fila' : 'músicas na fila'}
+                    {playlistToDisplay.length} {playlistToDisplay.length === 1 ? 'música na playlist' : 'músicas na playlist'}
                   </span>
                   <button
                     type="button"
                     onClick={handleClearQueue}
-                    title="Limpar todas as músicas na fila (mantém a faixa atual tocando)"
+                    title="Limpar todas as músicas da playlist (mantém a faixa atual tocando)"
                     className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer bg-red-950/40 hover:bg-red-900/60 text-red-400 border border-red-900/50 shadow-sm"
                   >
                     <Trash2 className="w-3.5 h-3.5" />
-                    Limpar fila
+                    Limpar playlist
                   </button>
                 </div>
               )}
@@ -4666,9 +4869,22 @@ export default function App() {
 
           {activeTab === 'chat' && (
             <div className="flex min-h-0 flex-1 flex-col">
-              <div className="mb-3 flex items-center justify-between border-b border-zinc-800 pb-2">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 border-b border-zinc-800 pb-2">
                 <span className="text-xs text-zinc-500">{roomState.chat?.length || 0}/{MAX_CHAT_MESSAGES} mensagens</span>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowPollCreator((open) => !open)}
+                    title="Criar uma enquete para sugerir um novo tema para a party"
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer border ${
+                      showPollCreator
+                        ? 'border-amber-500/60 bg-amber-500/20 text-amber-300'
+                        : 'border-zinc-800 bg-zinc-950 text-amber-400 hover:bg-zinc-800'
+                    }`}
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Enquete</span>
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -4699,9 +4915,160 @@ export default function App() {
                       </>
                     )}
                   </button>
-                  <span className="hidden sm:inline text-[10px] text-zinc-600">Histórico temporário da sessão</span>
                 </div>
               </div>
+
+              {/* Criador de Enquete de Tema */}
+              {showPollCreator && (
+                <form onSubmit={handleCreateThemePoll} className="mb-3 rounded-2xl border border-amber-500/40 bg-zinc-950/90 p-3 space-y-2.5 shadow-md">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
+                      <Sparkles className="w-3.5 h-3.5" /> Nova Enquete de Tema da Party
+                    </span>
+                    <button type="button" onClick={() => setShowPollCreator(false)} className="text-zinc-400 hover:text-white cursor-pointer">
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {PARTY_THEME_SUGGESTIONS.slice(0, 6).map((themeItem) => (
+                      <button
+                        key={themeItem.name}
+                        type="button"
+                        onClick={() => {
+                          setPollOptionsInput((prev) => {
+                            if (prev.includes(themeItem.name)) return prev;
+                            const emptyIdx = prev.findIndex((o) => !o.trim());
+                            if (emptyIdx !== -1) {
+                              const copy = [...prev];
+                              copy[emptyIdx] = themeItem.name;
+                              return copy;
+                            }
+                            if (prev.length < 4) return [...prev, themeItem.name];
+                            return [...prev.slice(0, 3), themeItem.name];
+                          });
+                        }}
+                        className="px-2 py-0.5 rounded-lg text-[10px] font-medium bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 cursor-pointer"
+                      >
+                        + {themeItem.name}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="space-y-1.5">
+                    {pollOptionsInput.map((opt, idx) => (
+                      <div key={idx} className="flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          value={opt}
+                          onChange={(e) => {
+                            const next = [...pollOptionsInput];
+                            next[idx] = e.target.value;
+                            setPollOptionsInput(next);
+                          }}
+                          maxLength={50}
+                          placeholder={`Opção de tema ${idx + 1}...`}
+                          className="flex-1 px-2.5 py-1.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs focus:outline-none focus:border-amber-500"
+                        />
+                        {pollOptionsInput.length > 2 && (
+                          <button
+                            type="button"
+                            onClick={() => setPollOptionsInput((prev) => prev.filter((_, i) => i !== idx))}
+                            className="p-1 text-zinc-500 hover:text-red-400 cursor-pointer"
+                            title="Remover opção"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    {pollOptionsInput.length < 4 ? (
+                      <button
+                        type="button"
+                        onClick={() => setPollOptionsInput((prev) => [...prev, ''])}
+                        className="text-[11px] font-semibold text-amber-400 hover:text-amber-300 cursor-pointer"
+                      >
+                        + Adicionar opção
+                      </button>
+                    ) : <span />}
+                    <button
+                      type="submit"
+                      disabled={pollOptionsInput.filter((o) => o.trim()).length < 2}
+                      className="px-3.5 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-40 text-white text-xs font-bold cursor-pointer transition"
+                    >
+                      Iniciar Enquete
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* Enquete de Tema Ativa */}
+              {roomState.themePoll && (
+                <div className="mb-3 rounded-2xl border border-amber-500/50 bg-zinc-950/90 p-3 space-y-2 shadow-md">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-amber-400 flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 shrink-0" /> Enquete: Próximo tema da party
+                      </p>
+                      <p className="text-[10px] text-zinc-400">Criada por {roomState.themePoll.createdBy} • Clique para votar</p>
+                    </div>
+                    {(isHost || roomState.themePoll.createdById === userId) && (
+                      <button
+                        type="button"
+                        onClick={handleCloseThemePoll}
+                        title="Encerrar enquete"
+                        className="p-1 rounded-lg text-zinc-400 hover:text-red-400 hover:bg-zinc-800 cursor-pointer"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
+                    {(() => {
+                      const totalVotes = (roomState.themePoll.options || []).reduce((acc, o) => acc + (o.voters?.length || 0), 0);
+                      return (roomState.themePoll.options || []).map((opt) => {
+                        const votes = opt.voters?.length || 0;
+                        const pct = totalVotes > 0 ? Math.round((votes / totalVotes) * 100) : 0;
+                        const hasVoted = (opt.voters || []).includes(userId);
+                        return (
+                          <div key={opt.id} className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => handleVoteThemePoll(opt.id)}
+                              className={`relative flex-1 overflow-hidden rounded-xl border px-3 py-1.5 text-left text-xs transition cursor-pointer ${
+                                hasVoted
+                                  ? 'border-amber-500 bg-amber-500/15 font-bold text-amber-300'
+                                  : 'border-zinc-800 bg-zinc-900/80 hover:border-zinc-700 text-zinc-200'
+                              }`}
+                            >
+                              <div
+                                className="absolute inset-y-0 left-0 bg-amber-500/20 transition-all duration-300 pointer-events-none"
+                                style={{ width: `${pct}%` }}
+                              />
+                              <div className="relative z-10 flex items-center justify-between gap-2">
+                                <span className="truncate">{opt.label}</span>
+                                <span className="text-[10px] font-mono shrink-0">
+                                  {votes} ({pct}%)
+                                </span>
+                              </div>
+                            </button>
+                            {isHost && (
+                              <button
+                                type="button"
+                                onClick={() => handleApplyThemePoll(opt.id)}
+                                title={`Alterar o tema da festa para "${opt.label}"`}
+                                className="px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold shrink-0 cursor-pointer transition"
+                              >
+                                Aplicar
+                              </button>
+                            )}
+                          </div>
+                        );
+                      });
+                    })()}
+                  </div>
+                </div>
+              )}
               <div className="relative min-h-0 flex-1">
                 <div
                   ref={chatMessagesContainerRef}
@@ -4876,6 +5243,39 @@ export default function App() {
                   autoFocus={editingModalFocus === 'room'}
                   className="w-full px-3.5 py-2 bg-zinc-950 border border-zinc-700/80 rounded-xl text-sm text-white focus:outline-none focus:border-red-500 placeholder-zinc-500"
                 />
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {PARTY_THEME_SUGGESTIONS.map((themeItem) => (
+                    <button
+                      key={themeItem.name}
+                      type="button"
+                      onClick={() => {
+                        setEditingRoomNameInput(themeItem.name);
+                        setEditingRoomDescriptionInput(themeItem.description);
+                      }}
+                      className={`px-2 py-0.5 rounded-lg text-[10px] font-medium transition cursor-pointer border ${
+                        editingRoomNameInput === themeItem.name
+                          ? 'bg-red-600/25 text-red-300 border-red-500/60'
+                          : 'bg-zinc-950 hover:bg-zinc-800 text-zinc-400 border-zinc-800'
+                      }`}
+                    >
+                      {themeItem.name}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-2.5">
+                  <label className="block text-[11px] font-medium text-zinc-400 mb-1 flex items-center justify-between">
+                    <span>Descrição da Festa (opcional)</span>
+                    <span className="text-[10px] text-zinc-500 font-mono">{editingRoomDescriptionInput.length}/140</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={editingRoomDescriptionInput}
+                    onChange={(e) => setEditingRoomDescriptionInput(e.target.value)}
+                    maxLength={140}
+                    placeholder="Sugestão de tema do dia (todos são livres para escolher!)"
+                    className="w-full px-3 py-1.5 bg-zinc-950 border border-zinc-700/80 rounded-xl text-xs text-white focus:outline-none focus:border-red-500 placeholder-zinc-500"
+                  />
+                </div>
               </div>
 
               {/* Seção 2: Apelido do Usuário */}
@@ -4941,6 +5341,7 @@ export default function App() {
                     (!editingNameInput.trim() && !editingRoomNameInput.trim()) ||
                     (editingNameInput.trim() === username &&
                       editingRoomNameInput.trim() === (roomState?.roomName || '') &&
+                      editingRoomDescriptionInput.trim() === (roomState?.roomDescription || '') &&
                       editingRoomIconInput === (roomState?.roomIcon || ''))
                   }
                   className="px-4 py-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:brightness-110 disabled:opacity-40 text-xs font-bold text-white shadow-md shadow-red-600/30 transition cursor-pointer"
