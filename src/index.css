@@ -223,12 +223,14 @@ html.light button:not(.bg-red-600):not(.bg-gradient-to-r):not(.bg-amber-600):hov
 html.light .party-member-card,
 html.light .user-card {
   background-color: #ffffff !important;
+  color: #0f172a !important;
   border-color: #e2e8f0 !important;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05) !important;
 }
 
 html.light .party-member-card.party-member-card-self {
   background-color: #ffffff !important;
+  color: #b91c1c !important;
   border-color: rgba(239, 68, 68, 0.5) !important;
 }
 

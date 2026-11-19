@@ -550,7 +550,7 @@ function InstallHelpPanel({ onClose }) {
           <h2 className="flex items-center gap-2 text-lg font-bold"><Download className="h-5 w-5 text-red-400" /> Instalar / adicionar</h2>
           <button onClick={onClose} className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white" aria-label="Fechar instruções"><X className="h-5 w-5" /></button>
         </div>
-        <div className="max-h-[65vh] space-y-4 overflow-y-auto text-sm text-zinc-300">
+        <div className="max-h-[65vh] space-y-4 overflow-y-auto text-sm text-zinc-300 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <p>O app requer uma URL pública HTTPS para ser instalado. Se o navegador oferecer o botão de instalação, ele será aberto automaticamente.</p>
           <div><strong className="text-white">Chrome / ChromeOS:</strong> menu ⋮ → “Instalar página como app”. No ChromeOS, o app instalado aparece no launcher e pode ser fixado na prateleira. Para a barra lateral, carregue a extensão da pasta <code>browser-extensions/chrome</code>.</div>
           <div><strong className="text-white">Opera:</strong> use o menu para instalar a página como app. Para a sidebar do Opera, carregue a extensão da pasta <code>browser-extensions/opera</code>.</div>
@@ -4017,11 +4017,24 @@ export default function App() {
               )}
             </div>
 
-            {roomState.playback.addedBy && (
-              <span className="text-[11px] uppercase tracking-wider text-red-400 font-semibold mb-1 flex items-center gap-1">
-                <Sparkles className="w-3 h-3" /> Escolhida por {roomState.playback.addedBy}
-              </span>
-            )}
+            {roomState.playback.addedBy && (() => {
+              const addedByMember = (roomState.members || []).find(
+                (member) =>
+                  (roomState.playback.addedById && member.id === roomState.playback.addedById) ||
+                  member.name === roomState.playback.addedBy
+              );
+              const addedByColor =
+                addedByMember?.color ||
+                getUserColor(roomState.playback.addedById || roomState.playback.addedBy);
+              return (
+                <span
+                  className="text-[11px] uppercase tracking-wider font-semibold mb-1 flex items-center gap-1"
+                  style={{ color: addedByColor }}
+                >
+                  <Sparkles className="w-3 h-3" /> Escolhida por {roomState.playback.addedBy}
+                </span>
+              );
+            })()}
             <h3 className="text-xl font-bold line-clamp-1">{cleanTrackTitle(roomState.playback.title)}</h3>
             <p className="text-sm text-zinc-400 mb-4">{cleanArtistName(roomState.playback.artist)}</p>
 
@@ -4097,37 +4110,37 @@ export default function App() {
             )}
 
             {/* Controles do Player */}
-            <div className="w-full flex items-center justify-between gap-3 pt-2 border-t border-zinc-800/80">
+            <div className="w-full flex flex-wrap items-center justify-center sm:justify-between gap-2 sm:gap-3 pt-2 border-t border-zinc-800/80">
               {isHost ? (
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
                   <button
                     onClick={handleTogglePlay}
                     disabled={!roomState.playback.videoId}
-                    className="w-11 h-11 rounded-full bg-red-600 hover:bg-red-500 disabled:opacity-40 flex items-center justify-center text-white shadow-md transition cursor-pointer"
+                    className="w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-red-600 hover:bg-red-500 disabled:opacity-40 flex items-center justify-center text-white shadow-md transition cursor-pointer shrink-0"
                     title="Play / Pause para toda a sala"
                   >
                     {roomState.playback.isPlaying ? (
-                      <Pause className="w-5 h-5" />
+                      <Pause className="w-4 h-4 sm:w-5 sm:h-5" />
                     ) : (
-                      <Play className="w-5 h-5 ml-0.5" />
+                      <Play className="w-4 h-4 sm:w-5 sm:h-5 ml-0.5" />
                     )}
                   </button>
                   <button
                     onClick={handleSkipNext}
                     disabled={roomState.queue.length === 0}
-                    className="w-9 h-9 rounded-full bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 disabled:opacity-40 flex items-center justify-center text-zinc-800 dark:text-white border border-zinc-200 dark:border-transparent transition cursor-pointer shadow-sm"
+                    className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 disabled:opacity-40 flex items-center justify-center text-zinc-800 dark:text-white border border-zinc-200 dark:border-transparent transition cursor-pointer shadow-sm shrink-0"
                     title="Pular para a próxima música da fila"
                   >
-                    <SkipForward className="w-4 h-4" />
+                    <SkipForward className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                   </button>
-                  <span className="text-[11px] text-amber-400 font-medium flex items-center gap-1 ml-1">
-                    <Crown className="w-3.5 h-3.5" /> Anfitrião
+                  <span className="text-[10px] sm:text-[11px] text-amber-400 font-medium flex items-center gap-1 ml-0.5 sm:ml-1 whitespace-nowrap">
+                    <Crown className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" /> Anfitrião
                   </span>
                 </div>
               ) : (
-                <div className="text-xs text-zinc-400 flex items-center gap-1.5">
-                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                  Sincronizado com {roomState.hostName}
+                <div className="text-[11px] sm:text-xs text-zinc-400 flex items-center gap-1.5 min-w-0">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                  <span className="truncate">Sincronizado com {roomState.hostName}</span>
                 </div>
               )}
 
@@ -4136,7 +4149,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={handleVoteSkipTrack}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition cursor-pointer shadow-sm ${
+                  className={`flex items-center gap-1 sm:gap-1.5 px-2.5 py-1 sm:px-3 sm:py-1.5 rounded-xl border text-[11px] sm:text-xs font-semibold transition cursor-pointer shadow-sm shrink-0 ${
                     (roomState.playback.skipVoters || []).includes(userId)
                       ? 'bg-white hover:bg-amber-50 border-amber-400 text-amber-600 dark:bg-amber-950/70 dark:hover:bg-amber-900/80 dark:border-amber-500/70 dark:text-amber-300'
                       : 'bg-white hover:bg-zinc-50 border-zinc-200 text-zinc-700 hover:text-zinc-900 dark:bg-zinc-800/90 dark:hover:bg-zinc-700/90 dark:border-zinc-700/70 dark:text-zinc-300 dark:hover:text-white'
@@ -4147,7 +4160,7 @@ export default function App() {
                       : 'Votar democraticamente para pular esta música (quando a maioria votar, inicia timer de 30s)'
                   }
                 >
-                  <ThumbsDown className={`w-3.5 h-3.5 ${(roomState.playback.skipVoters || []).includes(userId) ? 'text-amber-500 dark:text-amber-400' : 'text-zinc-500 dark:text-zinc-400'}`} />
+                  <ThumbsDown className={`w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0 ${(roomState.playback.skipVoters || []).includes(userId) ? 'text-amber-500 dark:text-amber-400' : 'text-zinc-500 dark:text-zinc-400'}`} />
                   <span>
                     {(roomState.playback.skipVoters || []).includes(userId) ? 'Votado p/ pular' : 'Pular'}
                   </span>
@@ -4158,7 +4171,7 @@ export default function App() {
               )}
 
               {/* Volume Local */}
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
                 <button
                   onClick={() => {
                     const nextMute = !isMuted;
@@ -4181,7 +4194,7 @@ export default function App() {
                   max="100"
                   value={isMuted ? 0 : volume}
                   onChange={handleVolumeChange}
-                  className="w-20 accent-red-600 cursor-pointer"
+                  className="w-16 sm:w-20 accent-red-600 cursor-pointer"
                 />
               </div>
             </div>
@@ -4208,7 +4221,7 @@ export default function App() {
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> online
               </span>
             </h4>
-            <div className="flex-1 min-h-0 overflow-y-auto py-1 flex flex-col gap-2">
+            <div className="flex-1 min-h-0 overflow-y-auto py-1 flex flex-col gap-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               {(roomState.members || []).map((m) => {
                 const isSelf = m.id === userId;
                 return (
@@ -4359,7 +4372,7 @@ export default function App() {
                 )}
               </form>
 
-              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pr-1">
+              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {isSearching ? (
                   <div className="text-center py-14 text-zinc-400 text-sm flex flex-col items-center gap-3">
                     <Disc3 className="w-7 h-7 text-red-500 animate-spin" />
@@ -4433,7 +4446,7 @@ export default function App() {
                   </button>
                 </div>
               )}
-              <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1">
+              <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               {playlistToDisplay.length === 0 ? (
                 <div className="text-center py-16 text-zinc-500 flex flex-col items-center">
                   <PartyTogetherLogo className="w-12 h-12 mb-3 opacity-60" iconSize="w-6 h-6" />
@@ -4735,7 +4748,7 @@ export default function App() {
             if (e.target === e.currentTarget) setIsEditingModalOpen(false);
           }}
         >
-          <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 max-w-sm w-full shadow-2xl relative animate-in fade-in zoom-in-95 duration-150 max-h-[90vh] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-xl bg-red-600/20 text-red-400 flex items-center justify-center">

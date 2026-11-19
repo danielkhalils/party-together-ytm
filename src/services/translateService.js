@@ -57,6 +57,10 @@ async function fetchGoogleGtx(text, targetLang) {
   if (!res.ok) throw new Error(`Google GTX returned ${res.status}`);
   const data = await res.json();
   if (!Array.isArray(data) || !Array.isArray(data[0])) throw new Error('Invalid format');
+  const detectedLang = typeof data[2] === 'string' ? data[2].toLowerCase() : '';
+  if (detectedLang && detectedLang.split('-')[0] === targetLang.toLowerCase().split('-')[0]) {
+    return text;
+  }
   const translated = data[0].map((item) => item[0]).join('');
   if (isErrorString(translated)) throw new Error('Error string detected');
   return stripLeakedLanguageSuffix(decodeHtmlEntities(translated.trim()), text);

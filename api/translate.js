@@ -87,6 +87,11 @@ async function translateSingleLine(line, target = 'pt', source = 'auto') {
     if (res.ok) {
       const data = await res.json();
       if (Array.isArray(data) && Array.isArray(data[0])) {
+        const detectedLang = typeof data[2] === 'string' ? data[2].toLowerCase() : '';
+        if (detectedLang && detectedLang.split('-')[0] === target.toLowerCase().split('-')[0]) {
+          serverVerseCache.set(cacheKey, line);
+          return line;
+        }
         const trans = data[0].map((item) => item[0]).join('');
         if (trans && !isErrorString(trans)) {
           const result = stripLeakedLanguageSuffix(decodeHtmlEntities(trans.trim()), trimmed);
