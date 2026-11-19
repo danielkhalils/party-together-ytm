@@ -1707,6 +1707,16 @@ export default function App() {
         queue: (currentRoom.queue || []).filter((track) => track.id !== action.itemId),
         playlist: (currentRoom.playlist || []).filter((track) => track.id !== action.itemId)
       });
+    } else if (action.type === 'CLEAR_QUEUE') {
+      if (action.senderId !== currentRoom.hostId) return;
+      const queuedCount = (currentRoom.queue || []).length;
+      const playlistQueuedCount = (currentRoom.playlist || []).filter((track) => track.status === 'queued').length;
+      if (queuedCount === 0 && playlistQueuedCount === 0) return;
+      broadcastRoomState({
+        ...currentRoom,
+        queue: [],
+        playlist: (currentRoom.playlist || []).filter((track) => track.status !== 'queued')
+      });
     } else if (action.type === 'KICK_MEMBER') {
       if (action.senderId !== currentRoom.hostId || action.userId === currentRoom.hostId) return;
       const members = currentRoom.members || [];
@@ -2984,6 +2994,14 @@ export default function App() {
     }
   };
 
+  const handleClearQueue = () => {
+    if (!isHostRef.current) return;
+    const queuedCount = (roomStateRef.current?.queue || []).length;
+    if (queuedCount === 0) return;
+    if (!window.confirm(`Tem certeza de que deseja limpar a fila (${queuedCount} ${queuedCount === 1 ? 'música' : 'músicas'})? A música atual continuará tocando.`)) return;
+    handleHostProcessGuestAction({ type: 'CLEAR_QUEUE', senderId: userId });
+  };
+
   const handleAvatarFileChange = async (event) => {
     const file = event.target.files?.[0];
     event.target.value = '';
@@ -3908,7 +3926,7 @@ export default function App() {
             ) : (
               <Share2 className="w-3.5 h-3.5" />
             )}
-            {copied ? 'Copiado!' : 'Convidar Amigos'}
+            {copied ? 'Copiado!' : 'Convidar'}
           </button>
 
           <button
@@ -3927,7 +3945,7 @@ export default function App() {
               className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer bg-white hover:bg-red-50 text-red-600 border border-red-200 dark:bg-red-950/40 dark:hover:bg-red-900/60 dark:text-red-400 dark:border-red-900/50 shadow-sm"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              Excluir Sala
+              Deletar
             </button>
           )}
         </div>
@@ -4363,7 +4381,24 @@ export default function App() {
 
           {/* ABA 2: PLAYLIST DA FESTA (MANTÉM AS FAIXAS ATÉ O FIM DA SESSÃO) */}
           {activeTab === 'queue' && (
-            <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1">
+            <div className="min-h-0 flex-1 flex flex-col">
+              {isHost && (roomState.queue?.length || 0) > 0 && (
+                <div className="mb-3 flex items-center justify-between border-b border-zinc-800 pb-2.5">
+                  <span className="text-xs text-zinc-400">
+                    {roomState.queue.length} {roomState.queue.length === 1 ? 'música na fila' : 'músicas na fila'}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleClearQueue}
+                    title="Limpar todas as músicas na fila (mantém a faixa atual tocando)"
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer bg-red-950/40 hover:bg-red-900/60 text-red-400 border border-red-900/50 shadow-sm"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Limpar fila
+                  </button>
+                </div>
+              )}
+              <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1">
               {playlistToDisplay.length === 0 ? (
                 <div className="text-center py-16 text-zinc-500 flex flex-col items-center">
                   <PartyTogetherLogo className="w-12 h-12 mb-3 opacity-60" iconSize="w-6 h-6" />
@@ -4431,6 +4466,7 @@ export default function App() {
                   </div>
                 ))
               )}
+              </div>
             </div>
           )}
 
