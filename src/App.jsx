@@ -520,7 +520,7 @@ function NewsPanel({ onClose }) {
         <ul className="max-h-[65vh] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden space-y-2.5 text-sm text-zinc-300">
           <li>• <strong>Enquete de Tema no Chat:</strong> qualquer participante pode criar uma enquete (pelo chat ou pelo botão no topo) para votar no próximo tema da party, e o anfitrião pode aplicar o tema vencedor com um clique.</li>
           <li>• <strong>Temas e Descrição da Festa:</strong> sugestões temáticas ao criar ou editar a sala, além de uma descrição opcional visível para todos os participantes (com playlist sempre livre).</li>
-          <li>• <strong>Limpar Playlist (Anfitrião):</strong> botão exclusivo para o administrador limpar toda a lista de músicas da playlist mantendo a faixa atual tocando.</li>
+          <li>• <strong>Limpar Playlist e Chat (Anfitrião):</strong> botões exclusivos para o administrador limpar toda a lista de músicas da playlist (mantendo a faixa atual) ou limpar o histórico do chat.</li>
           <li>• <strong>Controle de Sincronia e Tradução de Letras:</strong> botões <code>-0.5s</code> / <code>+0.5s</code> para ajustar a velocidade da letra, seletor de idioma sempre visível (Original ou traduzido) e sincronização aprimorada.</li>
           <li>• <strong>Convite Personalizado:</strong> o botão Convidar agora copia uma mensagem pronta com nome da party, música atual, PIN e link direto.</li>
           <li>• <strong>Layout Adaptativo e Performance:</strong> cards responsivos sem barras de rolagem visíveis, controles adaptados em telas menores e renderização muito mais leve no navegador.</li>
@@ -1792,6 +1792,13 @@ export default function App() {
       broadcastRoomState({
         ...currentRoom,
         themePoll: null
+      });
+    } else if (action.type === 'CLEAR_CHAT') {
+      if (action.senderId !== currentRoom.hostId) return;
+      if (!(currentRoom.chat || []).length) return;
+      broadcastRoomState({
+        ...currentRoom,
+        chat: []
       });
     } else if (action.type === 'KICK_MEMBER') {
       if (action.senderId !== currentRoom.hostId || action.userId === currentRoom.hostId) return;
@@ -3150,6 +3157,13 @@ export default function App() {
     } else {
       syncServiceRef.current?.sendAction(action);
     }
+  };
+
+  const handleClearChat = () => {
+    if (!isHostRef.current) return;
+    if (!(roomStateRef.current?.chat || []).length) return;
+    if (!window.confirm('Tem certeza de que deseja limpar todas as mensagens do chat para todos os participantes?')) return;
+    handleHostProcessGuestAction({ type: 'CLEAR_CHAT', senderId: userId });
   };
 
   const handleAvatarFileChange = async (event) => {
@@ -4885,6 +4899,17 @@ export default function App() {
                     <Sparkles className="w-3.5 h-3.5" />
                     <span>Enquete</span>
                   </button>
+                  {isHost && (roomState.chat?.length || 0) > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleClearChat}
+                      title="Limpar todas as mensagens do chat (somente administrador)"
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition cursor-pointer border border-red-900/50 bg-red-950/40 hover:bg-red-900/60 text-red-400"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Limpar</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
