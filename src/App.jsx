@@ -3912,16 +3912,21 @@ export default function App() {
             onClick={() => {
               const inviteUrl = new URL(window.location.href);
               inviteUrl.search = new URLSearchParams({ room: roomState.roomId, pin: roomState.pinCode }).toString();
+              const currentTrack = roomState.playback?.videoId && roomState.playback?.title
+                ? `\n🎵 Tocando agora: ${cleanTrackTitle(roomState.playback.title)}${roomState.playback.artist ? ` — ${cleanArtistName(roomState.playback.artist)}` : ''}`
+                : '';
+              const inviteMessage = `🎉 Vem ouvir música comigo na party "${roomState.roomName}"!${currentTrack}\n🔑 Sala: ${roomState.roomId} | PIN: ${roomState.pinCode}\n👉 ${inviteUrl.toString()}`;
               const markCopied = () => {
                 setCopied(true);
                 setTimeout(() => setCopied(false), 2000);
               };
               if (navigator.clipboard?.writeText) {
-                navigator.clipboard.writeText(inviteUrl.toString()).then(markCopied).catch(() => window.prompt('Copie o link do convite:', inviteUrl.toString()));
+                navigator.clipboard.writeText(inviteMessage).then(markCopied).catch(() => window.prompt('Copie o convite da party:', inviteMessage));
               } else {
-                window.prompt('Copie o link do convite:', inviteUrl.toString());
+                window.prompt('Copie o convite da party:', inviteMessage);
               }
             }}
+            title="Copiar convite personalizado da party"
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-800 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700/60 shadow-sm"
           >
             {copied ? (
