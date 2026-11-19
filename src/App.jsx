@@ -398,8 +398,8 @@ function AlbumBackdrop({ src, theme = 'dark' }) {
       <div className={`pointer-events-none fixed inset-0 z-0 overflow-hidden transition-colors duration-500 ${
         theme === 'light' ? 'bg-gradient-to-br from-zinc-100 via-zinc-200 to-zinc-50' : 'bg-gradient-to-br from-zinc-950 via-zinc-900 to-black'
       }`}>
-        <div className="absolute -top-32 -left-32 w-[60vw] h-[60vw] max-w-[800px] max-h-[800px] rounded-full bg-red-600/15 blur-[80px] better-lyrics-shader-orb-1" />
-        <div className="absolute -bottom-32 -right-32 w-[55vw] h-[55vw] max-w-[750px] max-h-[750px] rounded-full bg-amber-600/15 blur-[80px] better-lyrics-shader-orb-2" />
+        <div className="absolute -top-24 -left-24 w-[45vw] h-[45vw] max-w-[520px] max-h-[520px] rounded-full bg-red-600/12 blur-3xl" />
+        <div className="absolute -bottom-24 -right-24 w-[45vw] h-[45vw] max-w-[520px] max-h-[520px] rounded-full bg-amber-600/12 blur-3xl" />
         <div className={`absolute inset-0 ${theme === 'light' ? 'bg-white/40' : 'bg-zinc-950/70'}`} />
       </div>
     );
@@ -410,7 +410,7 @@ function AlbumBackdrop({ src, theme = 'dark' }) {
       {layers.map((layer) => (
         <div
           key={layer.id}
-          className={`absolute inset-0 transition-opacity duration-1000 ease-out ${
+          className={`absolute inset-0 transition-opacity duration-700 ease-out ${
             layer.visible ? 'opacity-100' : 'opacity-0'
           }`}
           onTransitionEnd={(event) => {
@@ -431,21 +431,9 @@ function AlbumBackdrop({ src, theme = 'dark' }) {
             className="hidden"
           />
 
-          {/* Camada 1: Capa do álbum em ultra-blur girando no fundo gerando cores vivas com alta performance */}
+          {/* Camada única estática com blur leve em GPU (evita repaints 60fps e travamentos no navegador) */}
           <div
-            className="album-backdrop-spinning absolute top-1/2 left-1/2 w-[140vmax] h-[140vmax] max-w-none max-h-none rounded-full bg-cover bg-center blur-[45px] brightness-[0.8] saturate-[210%] contrast-[110%]"
-            style={{ backgroundImage: `url(${layer.src})` }}
-          />
-
-          {/* Camada 2: Segunda camada girando em sentido contrário com rotação e blend interativo suave */}
-          <div
-            className="album-backdrop-spinning-reverse absolute top-1/2 left-1/2 w-[130vmax] h-[130vmax] max-w-none max-h-none rounded-full bg-cover bg-center blur-[60px] opacity-60 mix-blend-screen brightness-[0.85] saturate-[230%]"
-            style={{ backgroundImage: `url(${layer.src})` }}
-          />
-
-          {/* Camada 3: Pulso sutil de aura central leve */}
-          <div
-            className="better-lyrics-shader-pulse absolute top-1/2 left-1/2 w-[70vw] h-[70vw] max-w-[750px] max-h-[750px] rounded-full bg-cover bg-center blur-[70px] opacity-35 mix-blend-color-dodge"
+            className="absolute inset-0 scale-110 bg-cover bg-center blur-2xl brightness-[0.75] saturate-[165%]"
             style={{ backgroundImage: `url(${layer.src})` }}
           />
         </div>
@@ -2264,8 +2252,8 @@ export default function App() {
         const dur = player.getDuration() || 0;
         if (Date.now() - lastPlayerUiUpdateRef.current >= 500) {
           lastPlayerUiUpdateRef.current = Date.now();
-          setLocalProgress(curr);
-          setDuration(dur);
+          setLocalProgress((prev) => (Math.abs(prev - curr) >= 0.15 ? curr : prev));
+          setDuration((prev) => (prev !== dur ? dur : prev));
         }
 
         if (!currentRoom) return;
