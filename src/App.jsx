@@ -518,6 +518,7 @@ function NewsPanel({ onClose }) {
           <button onClick={onClose} className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white" aria-label="Fechar novidades"><X className="h-5 w-5" /></button>
         </div>
         <ul className="max-h-[65vh] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden space-y-2.5 text-sm text-zinc-300">
+          <li>• <strong>Importar Playlist do YouTube / YT Music:</strong> cole o link de uma playlist na busca para extrair e adicionar até 100 músicas automaticamente uma por uma na fila da party.</li>
           <li>• <strong>Sugestões na Busca:</strong> enquanto uma música está tocando, a aba Buscar Música sugere automaticamente faixas parecidas antes mesmo de você digitar.</li>
           <li>• <strong>Enquete de Tema no Chat:</strong> qualquer participante pode criar uma enquete (pelo chat ou pelo botão no topo) para votar no próximo tema da party, e o anfitrião pode aplicar o tema vencedor com um clique.</li>
           <li>• <strong>Temas e Descrição da Festa:</strong> sugestões temáticas ao criar ou editar a sala, além de uma descrição opcional visível para todos os participantes (com playlist sempre livre).</li>
@@ -988,6 +989,21 @@ const PARTY_THEME_SUGGESTIONS = [
   { name: 'Brasilidades & MPB', description: 'MPB, samba, pagode e clássicos nacionais para curtir junto.' }
 ];
 
+const MAX_IMPORT_PLAYLIST_TRACKS = 100;
+
+function extractYouTubePlaylistId(input) {
+  if (!input) return null;
+  const trimmed = String(input).trim();
+  if (!/(?:youtube\.com|youtu\.be|music\.youtube\.com)/i.test(trimmed)) return null;
+  try {
+    const parsed = new URL(trimmed);
+    const list = parsed.searchParams.get('list');
+    if (list && /^[a-zA-Z0-9_-]{10,120}$/.test(list)) return list;
+  } catch {}
+  const match = trimmed.match(/[?&]list=([a-zA-Z0-9_-]{10,120})/);
+  return match ? match[1] : null;
+}
+
 export default function App() {
   // Identidade e Avatar Fofo aleatório do usuário (persistidos para manter identidade do admin e convidados)
   const [userId] = useState(() => {
@@ -1103,6 +1119,8 @@ export default function App() {
   const [searchResults, setSearchResults] = useState([]);
   const [suggestedTracks, setSuggestedTracks] = useState([]);
   const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
+  const [isImportingPlaylist, setIsImportingPlaylist] = useState(false);
+  const [playlistImportStatus, setPlaylistImportStatus] = useState('');
   const [isSearching, setIsSearching] = useState(false);
 
   // Abas: 'queue' | 'search' | 'lyrics' | 'chat'
@@ -3088,10 +3106,57 @@ export default function App() {
     }
   };
 
-  // Adicionar por Link Direto do YouTube buscando o título e artista reais do vídeo
+  // Adicionar por Link Direto do YouTube (vídeo único ou playlist de até 100 músicas)
   const handleAddCustomYoutubeUrl = async (e) => {
     e.preventDefault();
     const query = searchQuery.trim();
+    if (!query || isImportingPlaylist) return;
+
+    const playlistId = extractYouTubePlaylistId(query);
+    if (playlistId) {
+      setIsImportingPlaylist(true);
+      setPlaylistImportStatus('Lendo músicas da playlist do YouTube...');
+      try {
+        const res = await fetch(`/api/playlist?list=${encodeURIComponent(playlistId)}`);
+        const data = await res.json();
+        if (!res.ok || !Array.isArray(data.tracks) || data.tracks.length === 0) {
+          setPlaylistImportStatus(data.error || 'Não foi possível importar esta playlist.');
+          return;
+        }
+
+        const tracksToImport = data.tracks.slice(0, MAX_IMPORT_PLAYLIST_TRACKS);
+        let addedCount = 0;
+
+        for (let i = 0; i < tracksToImport.length; i += 1) {
+          const track = tracksToImport[i];
+          const currentRoom = roomStateRef.current;
+          const alreadyActive =
+            currentRoom?.playback?.videoId === track.videoId ||
+            (currentRoom?.queue || []).some((item) => item.videoId === track.videoId);
+          if (!alreadyActive) {
+            handleAddTrack(track);
+            addedCount += 1;
+            setPlaylistImportStatus(`Importando ${addedCount}/${tracksToImport.length} músicas da playlist...`);
+            await new Promise((resolve) => setTimeout(resolve, 40));
+          }
+        }
+
+        setSearchQuery('');
+        setSearchResults([]);
+        setPlaylistImportStatus(
+          addedCount > 0
+            ? `✅ ${addedCount} ${addedCount === 1 ? 'música importada' : 'músicas importadas'} da playlist${data.playlistTitle ? ` "${data.playlistTitle}"` : ''} (limite máx. ${MAX_IMPORT_PLAYLIST_TRACKS}).`
+            : 'Todas as músicas desta playlist já estão na fila.'
+        );
+        setTimeout(() => setPlaylistImportStatus(''), 5000);
+      } catch {
+        setPlaylistImportStatus('Erro ao importar a playlist. Verifique se o link é público.');
+      } finally {
+        setIsImportingPlaylist(false);
+      }
+      return;
+    }
+
     const extractedId = extractYouTubeId(query);
     if (!extractedId) return;
 
@@ -4623,26 +4688,41 @@ export default function App() {
           {/* ABA 1: BUSCA DO YOUTUBE MUSIC (INICIA VAZIA) */}
           {activeTab === 'search' && (
             <div className="flex min-h-0 flex-1 flex-col">
-              <form onSubmit={handleAddCustomYoutubeUrl} className="flex gap-2 mb-4">
+              <form onSubmit={handleAddCustomYoutubeUrl} className="flex gap-2 mb-3">
                 <div className="relative flex-1">
                   <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
                   <input
                     type="text"
-                    placeholder="Digite o nome da música, artista ou cole um link do YouTube..."
+                    placeholder="Digite música, artista ou cole link de vídeo/playlist do YouTube..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="w-full pl-10 pr-4 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-sm focus:outline-none focus:border-red-500"
+                    disabled={isImportingPlaylist}
+                    className="w-full pl-10 pr-4 py-2.5 bg-zinc-950 border border-zinc-800 rounded-xl text-sm focus:outline-none focus:border-red-500 disabled:opacity-60"
                   />
                 </div>
-                {extractYouTubeId(searchQuery) && (
+                {extractYouTubePlaylistId(searchQuery) ? (
+                  <button
+                    type="submit"
+                    disabled={isImportingPlaylist}
+                    className="px-4 py-2.5 bg-gradient-to-r from-red-600 to-amber-600 hover:brightness-110 disabled:opacity-50 text-white text-xs font-bold rounded-xl shrink-0 cursor-pointer transition"
+                  >
+                    {isImportingPlaylist ? 'Importando...' : 'Importar Playlist'}
+                  </button>
+                ) : extractYouTubeId(searchQuery) ? (
                   <button
                     type="submit"
                     className="px-4 py-2.5 bg-red-600 hover:bg-red-500 text-white text-xs font-bold rounded-xl shrink-0 cursor-pointer"
                   >
                     Adicionar Link
                   </button>
-                )}
+                ) : null}
               </form>
+              {playlistImportStatus && (
+                <div className="mb-3 px-3 py-2 rounded-xl bg-amber-950/50 border border-amber-600/40 text-xs text-amber-200 flex items-center gap-2">
+                  {isImportingPlaylist && <Disc3 className="w-3.5 h-3.5 text-amber-400 animate-spin shrink-0" />}
+                  <span>{playlistImportStatus}</span>
+                </div>
+              )}
 
               <div className="min-h-0 flex-1 space-y-2 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {isSearching ? (
