@@ -518,6 +518,7 @@ function NewsPanel({ onClose }) {
           <button onClick={onClose} className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white" aria-label="Fechar novidades"><X className="h-5 w-5" /></button>
         </div>
         <ul className="max-h-[65vh] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden space-y-2.5 text-sm text-zinc-300">
+          <li>• <strong>Sugestões na Busca:</strong> enquanto uma música está tocando, a aba Buscar Música sugere automaticamente faixas parecidas antes mesmo de você digitar.</li>
           <li>• <strong>Enquete de Tema no Chat:</strong> qualquer participante pode criar uma enquete (pelo chat ou pelo botão no topo) para votar no próximo tema da party, e o anfitrião pode aplicar o tema vencedor com um clique.</li>
           <li>• <strong>Temas e Descrição da Festa:</strong> sugestões temáticas ao criar ou editar a sala, além de uma descrição opcional visível para todos os participantes (com playlist sempre livre).</li>
           <li>• <strong>Limpar Playlist e Chat (Anfitrião):</strong> botões exclusivos para o administrador limpar toda a lista de músicas da playlist (mantendo a faixa atual) ou limpar o histórico do chat.</li>
@@ -1100,6 +1101,8 @@ export default function App() {
   // Estados da Busca (Inicia VAZIA a critério do usuário)
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
+  const [suggestedTracks, setSuggestedTracks] = useState([]);
+  const [isLoadingSuggestions, setIsLoadingSuggestions] = useState(false);
   const [isSearching, setIsSearching] = useState(false);
 
   // Abas: 'queue' | 'search' | 'lyrics' | 'chat'
@@ -1881,6 +1884,51 @@ export default function App() {
 
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  // Sugestões automáticas de músicas parecidas com a faixa atual (exibidas na busca antes de pesquisar)
+  useEffect(() => {
+    const currentVideoId = roomState?.playback?.videoId;
+    const rawArtist = roomState?.playback?.artist;
+    const rawTitle = roomState?.playback?.title;
+
+    if (!inRoom || !currentVideoId) {
+      setSuggestedTracks([]);
+      setIsLoadingSuggestions(false);
+      return;
+    }
+
+    let isCancelled = false;
+    const artist = cleanArtistName(rawArtist || '');
+    const title = cleanTrackTitle(rawTitle || '');
+    const suggestionQuery = artist ? `${artist} ${title}` : title;
+    if (!suggestionQuery.trim()) {
+      setSuggestedTracks([]);
+      return;
+    }
+
+    async function fetchSuggestions() {
+      setIsLoadingSuggestions(true);
+      try {
+        const res = await fetch(`/api/search?q=${encodeURIComponent(suggestionQuery)}`);
+        if (!res.ok) throw new Error('Falha ao buscar sugestões');
+        const data = await res.json();
+        if (isCancelled) return;
+        const filtered = (Array.isArray(data) ? data : [])
+          .filter((item) => item?.videoId && item.videoId !== currentVideoId)
+          .slice(0, 8);
+        setSuggestedTracks(filtered);
+      } catch {
+        if (!isCancelled) setSuggestedTracks([]);
+      } finally {
+        if (!isCancelled) setIsLoadingSuggestions(false);
+      }
+    }
+
+    fetchSuggestions();
+    return () => {
+      isCancelled = true;
+    };
+  }, [inRoom, roomState?.playback?.videoId]);
 
   useEffect(() => {
     const query = gifSearchQuery.trim();
@@ -4603,15 +4651,62 @@ export default function App() {
                     <span>Buscando no catálogo do YouTube Music...</span>
                   </div>
                 ) : !searchQuery.trim() ? (
-                  <div className="text-center py-16 text-zinc-500 flex flex-col items-center">
-                    <PartyTogetherLogo className="w-12 h-12 mb-3 opacity-60" iconSize="w-6 h-6" />
-                    <p className="text-sm font-medium text-zinc-300">
-                      Sua playlist colaborativa começa aqui!
-                    </p>
-                    <p className="text-xs text-zinc-500 mt-1 max-w-xs">
-                      Pesquise qualquer música ou artista acima para tocar agora ou adicionar à fila da festa.
-                    </p>
-                  </div>
+                  roomState.playback.videoId && (isLoadingSuggestions || suggestedTracks.length > 0) ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between px-1 pb-1">
+                        <span className="text-xs font-semibold text-amber-500 dark:text-amber-400 flex items-center gap-1.5">
+                          <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                          <span className="truncate">Parecidas com &ldquo;{cleanTrackTitle(roomState.playback.title)}&rdquo;</span>
+                        </span>
+                      </div>
+                      {isLoadingSuggestions ? (
+                        <div className="text-center py-10 text-zinc-400 text-xs flex flex-col items-center gap-2.5">
+                          <Disc3 className="w-6 h-6 text-red-500 animate-spin" />
+                          <span>Buscando sugestões parecidas...</span>
+                        </div>
+                      ) : (
+                        suggestedTracks.map((track) => (
+                          <div
+                            key={track.videoId}
+                            className="flex items-center justify-between gap-3 p-2.5 rounded-2xl bg-zinc-950/90 border border-zinc-800/80 hover:border-zinc-700 transition"
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <img
+                                src={track.thumbnail}
+                                alt={track.title}
+                                className="w-12 h-12 rounded-xl object-cover shrink-0"
+                              />
+                              <div className="min-w-0">
+                                <p className="text-sm font-semibold truncate">{track.title}</p>
+                                <p className="text-xs text-zinc-400 truncate">
+                                  {track.artist}{track.duration ? ` • ${track.duration}` : ''}
+                                </p>
+                              </div>
+                            </div>
+
+                            <button
+                              onClick={() => handleAddTrack(track)}
+                              disabled={isTrackActive(track.videoId)}
+                              className="flex items-center gap-1 px-3.5 py-2 rounded-xl bg-red-600/20 hover:bg-red-600 text-red-300 hover:text-white border border-red-600/40 text-xs font-bold transition shrink-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                              {isTrackActive(track.videoId) ? 'Já na playlist' : 'Na Fila'}
+                            </button>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-center py-16 text-zinc-500 flex flex-col items-center">
+                      <PartyTogetherLogo className="w-12 h-12 mb-3 opacity-60" iconSize="w-6 h-6" />
+                      <p className="text-sm font-medium text-zinc-300">
+                        Sua playlist colaborativa começa aqui!
+                      </p>
+                      <p className="text-xs text-zinc-500 mt-1 max-w-xs">
+                        Pesquise qualquer música ou artista acima para tocar agora ou adicionar à fila da festa.
+                      </p>
+                    </div>
+                  )
                 ) : searchResults.length === 0 ? (
                   <p className="text-center py-12 text-zinc-500 text-sm">
                     Nenhuma música encontrada para &ldquo;{searchQuery}&rdquo;.
