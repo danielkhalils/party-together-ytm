@@ -3884,17 +3884,6 @@ export default function App() {
               <span>Anfitrião: <strong className="text-zinc-200">{roomState.hostName}</strong></span>
               <span>•</span>
               <span>{(roomState.members || []).length} na festa</span>
-              <span>•</span>
-              <span>Você:</span>
-              <button
-                type="button"
-                onClick={handleOpenEditName}
-                title="Clique para alterar seu apelido nesta sala"
-                className="font-semibold text-zinc-800 dark:text-zinc-200 hover:text-red-500 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 shadow-sm transition cursor-pointer"
-              >
-                <span>{username}</span>
-                <Pencil className="w-3 h-3 text-zinc-400 hover:text-red-500" />
-              </button>
             </p>
           </div>
         </div>
@@ -4170,8 +4159,8 @@ export default function App() {
                 </button>
               )}
 
-              {/* Volume Local */}
-              <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+              {/* Volume Local (em telas >= sm fica nesta linha) */}
+              <div className="hidden sm:flex items-center gap-2 shrink-0">
                 <button
                   onClick={() => {
                     const nextMute = !isMuted;
@@ -4194,21 +4183,51 @@ export default function App() {
                   max="100"
                   value={isMuted ? 0 : volume}
                   onChange={handleVolumeChange}
-                  className="w-16 sm:w-20 accent-red-600 cursor-pointer"
+                  className="w-20 accent-red-600 cursor-pointer"
                 />
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={handleResyncPlayer}
-              disabled={!roomState.playback.videoId || isResyncingPlayer}
-              title="Recarregar a música atual e sincronizar este player com a sala"
-              className="mt-3 flex self-end items-center gap-1.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white hover:bg-zinc-50 dark:bg-zinc-950/80 dark:hover:bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-700 dark:text-zinc-300 transition hover:border-red-500/60 hover:text-red-500 dark:hover:text-white disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer shadow-sm"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${isResyncingPlayer ? 'animate-spin text-red-400' : ''}`} />
-              {isResyncingPlayer ? 'Sincronizando...' : 'Sincronizar player'}
-            </button>
+            <div className="w-full mt-3 flex items-center justify-between sm:justify-end gap-2">
+              {/* Volume Local (em telas menores fica alinhado na mesma linha do botão Sincronizar player) */}
+              <div className="flex sm:hidden items-center gap-1.5 shrink-0">
+                <button
+                  onClick={() => {
+                    const nextMute = !isMuted;
+                    setIsMuted(nextMute);
+                    if (playerRef.current && playerRef.current.setVolume) {
+                      playerRef.current.setVolume(nextMute ? 0 : volume);
+                    }
+                  }}
+                  className="text-zinc-400 hover:text-white cursor-pointer"
+                >
+                  {isMuted || volume === 0 ? (
+                    <VolumeX className="w-4 h-4" />
+                  ) : (
+                    <Volume2 className="w-4 h-4" />
+                  )}
+                </button>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  value={isMuted ? 0 : volume}
+                  onChange={handleVolumeChange}
+                  className="w-20 accent-red-600 cursor-pointer"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={handleResyncPlayer}
+                disabled={!roomState.playback.videoId || isResyncingPlayer}
+                title="Recarregar a música atual e sincronizar este player com a sala"
+                className="flex items-center gap-1.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white hover:bg-zinc-50 dark:bg-zinc-950/80 dark:hover:bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-700 dark:text-zinc-300 transition hover:border-red-500/60 hover:text-red-500 dark:hover:text-white disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer shadow-sm shrink-0"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${isResyncingPlayer ? 'animate-spin text-red-400' : ''}`} />
+                {isResyncingPlayer ? 'Sincronizando...' : 'Sincronizar player'}
+              </button>
+            </div>
           </div>
 
           {/* Lista de Participantes com Fotos Fofas Aleatórias e Status Online */}
@@ -4541,22 +4560,29 @@ export default function App() {
                     <span>{showTranslatedLyrics ? 'Ver Original' : 'Traduzir Letras'}</span>
                   </button>
 
-                  {showTranslatedLyrics && (
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-medium hidden sm:inline">Idioma:</span>
-                      <select
-                        value={translationData.targetLang}
-                        onChange={(e) => setTranslationData((prev) => ({ ...prev, targetLang: e.target.value }))}
-                        className="bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-zinc-200 dark:border-zinc-700 text-zinc-800 dark:text-zinc-200 text-xs rounded-xl px-2.5 py-1.5 focus:outline-none focus:border-amber-500 cursor-pointer font-medium shadow-sm transition"
-                      >
-                        {SUPPORTED_LANGUAGES.map((lang) => (
-                          <option key={lang.code} value={lang.code}>
-                            {lang.flag} {lang.label}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-medium hidden sm:inline">Idioma:</span>
+                    <select
+                      value={showTranslatedLyrics ? translationData.targetLang : 'original'}
+                      onChange={(e) => {
+                        const selected = e.target.value;
+                        if (selected === 'original') {
+                          setShowTranslatedLyrics(false);
+                        } else {
+                          setTranslationData((prev) => ({ ...prev, targetLang: selected }));
+                          setShowTranslatedLyrics(true);
+                        }
+                      }}
+                      className="bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-zinc-200 dark:border-zinc-700 text-zinc-800 dark:text-zinc-200 text-xs rounded-xl px-2.5 py-1.5 focus:outline-none focus:border-amber-500 cursor-pointer font-medium shadow-sm transition"
+                    >
+                      <option value="original">🎵 Original</option>
+                      {SUPPORTED_LANGUAGES.map((lang) => (
+                        <option key={lang.code} value={lang.code}>
+                          {lang.flag} {lang.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               )}
 
