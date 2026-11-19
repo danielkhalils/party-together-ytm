@@ -29,9 +29,8 @@ function decodeHtmlEntities(str) {
 function stripLeakedLanguageSuffix(text, originalText = '') {
   if (!text || typeof text !== 'string') return text;
   return text
-    .replace(/\s*\b(en|pt|es|fr|de|it|ja|ko)\b$/i, (match, code) => {
-      const origEnds = (originalText || '').trim().toLowerCase().endsWith(code.toLowerCase());
-      return origEnds ? match : '';
+    .replace(/\s*(?:\[(?:en|pt|es|fr|de|it|ja|ko)\]|\((?:en|pt|es|fr|de|it|ja|ko)\)|(?:en|pt|es|fr|de|it|ja|ko)\s*[-–—]\s*(?:english|portugu[eê]s|portuguese|espa[nñ]ol|spanish|fran[cç]ais|french|deutsch|german|italiano|italian|japanese|korean))\s*$/i, (match) => {
+      return (originalText || '').trim().toLowerCase().endsWith(match.trim().toLowerCase()) ? match : '';
     })
     .trim();
 }

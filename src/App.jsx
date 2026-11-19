@@ -943,15 +943,8 @@ const SyncedLyricsList = React.memo(function SyncedLyricsList({ lines, activeInd
 );
 
 const TranslatedLyricsLine = React.memo(function TranslatedLyricsLine({ line, isCurrent, isHost, activeLineRef, seekRef }) {
-  // Limpeza de segurança para garantir que nenhum sufixo 'en' ou 'pt' vazado apareça no final
-  const cleanTranslated = (line.text || '').replace(/\s*\b(en|pt|es|fr|de|it|ja|ko)\b$/i, (match, code) => {
-    const origEnds = (line.originalText || '').trim().toLowerCase().endsWith(code.toLowerCase());
-    return origEnds ? match : '';
-  }).trim();
-
-  const cleanOriginal = (line.originalText || '').replace(/\s*\b(en|pt|es|fr|de|it|ja|ko)\b$/i, (match, code) => {
-    return (line.text || '').trim().toLowerCase().endsWith(code.toLowerCase()) ? match : '';
-  }).trim();
+  const cleanTranslated = (line.text || '').trim();
+  const cleanOriginal = (line.originalText || '').trim();
 
   return (
     <div
@@ -1189,6 +1182,7 @@ export default function App() {
 
   // Tradução de Letras integrada na aba Letras (BetterLyrics)
   const [showTranslatedLyrics, setShowTranslatedLyrics] = useState(false);
+  const [lyricsOffset, setLyricsOffset] = useState(0);
   const [translationData, setTranslationData] = useState({
     loading: false,
     synced: [],
@@ -1835,6 +1829,7 @@ export default function App() {
     const rawTitle = roomState?.playback?.title;
     const rawArtist = roomState?.playback?.artist;
 
+    setLyricsOffset(0);
     setTranslationData((prev) => ({
       ...prev,
       videoId: currentVideoId || null,
@@ -2347,7 +2342,7 @@ export default function App() {
   // Calcula qual verso da letra está ativo neste exato momento
   const activeLyricIndex = React.useMemo(() => {
     if (!lyricsData.synced.length) return -1;
-    const targetTime = localProgress + 0.25;
+    const targetTime = localProgress + 0.25 + lyricsOffset;
     let low = 0;
     let high = lyricsData.synced.length - 1;
     let activeIndex = -1;
@@ -2361,7 +2356,7 @@ export default function App() {
       }
     }
     return activeIndex;
-  }, [lyricsData.synced, localProgress]);
+  }, [lyricsData.synced, localProgress, lyricsOffset]);
 
   // Smoothly scroll only the lyrics viewport; cancel the previous movement on a new line.
   useEffect(() => {
@@ -4543,13 +4538,13 @@ export default function App() {
               ref={lyricsContainerRef}
               className="better-lyrics-scroll-area min-h-0 flex-1 overflow-y-auto overflow-x-hidden rounded-2xl border border-zinc-200/80 dark:border-zinc-800/70 bg-gradient-to-b from-white/95 via-zinc-50/80 to-white/95 dark:from-zinc-950/90 dark:via-zinc-950/60 dark:to-zinc-950/90 px-4 sm:px-8 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden relative transition-colors"
             >
-              {/* Barra Superior da Aba Letras: Card de Tradução adaptado aos temas Dark e Light */}
+              {/* Barra Superior da Aba Letras: Card de Tradução e Ajuste de Sincronia */}
               {roomState.playback.videoId && (lyricsData.synced.length > 0 || lyricsData.plain) && (
-                <div className="lyrics-translation-card sticky top-2 z-20 mx-auto max-w-sm mb-3 flex items-center justify-between gap-2 p-1.5 px-3 rounded-2xl bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border border-zinc-200 dark:border-zinc-800 shadow-sm transition-colors">
+                <div className="lyrics-translation-card sticky top-2 z-20 mx-auto max-w-lg mb-3 flex flex-wrap items-center justify-center sm:justify-between gap-2 p-1.5 px-3 rounded-2xl bg-white/95 dark:bg-zinc-900/95 backdrop-blur-md border border-zinc-200 dark:border-zinc-800 shadow-sm transition-colors">
                   <button
                     type="button"
                     onClick={() => setShowTranslatedLyrics((prev) => !prev)}
-                    className={`px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-sm ${
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-sm ${
                       showTranslatedLyrics
                         ? 'bg-amber-500 text-white border border-amber-600 shadow-amber-500/20 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/60'
                         : 'bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 hover:text-zinc-900 dark:text-zinc-200 dark:hover:text-white border border-zinc-200 dark:border-zinc-700'
@@ -4559,6 +4554,35 @@ export default function App() {
                     <Languages className={`w-3.5 h-3.5 ${showTranslatedLyrics ? 'text-white dark:text-amber-300' : 'text-amber-500 dark:text-amber-400'}`} />
                     <span>{showTranslatedLyrics ? 'Ver Original' : 'Traduzir Letras'}</span>
                   </button>
+
+                  {lyricsData.synced.length > 0 && (
+                    <div className="flex items-center gap-1" title="Ajustar sincronização da letra (atrasar ou adiantar)">
+                      <button
+                        type="button"
+                        onClick={() => setLyricsOffset((prev) => Math.max(-10, Number((prev - 0.5).toFixed(1))))}
+                        className="px-2 py-1 rounded-lg text-xs font-bold bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700 transition cursor-pointer shadow-sm"
+                        title="Diminuir velocidade / atrasar letra (-0.5s)"
+                      >
+                        -0.5s
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLyricsOffset(0)}
+                        className="min-w-[44px] px-1.5 py-1 rounded-lg text-[11px] font-mono font-semibold text-center bg-zinc-100 hover:bg-zinc-200 dark:bg-zinc-950 dark:hover:bg-zinc-800 text-zinc-700 dark:text-zinc-300 border border-zinc-200 dark:border-zinc-800 transition cursor-pointer"
+                        title="Clique para zerar o ajuste de sincronia"
+                      >
+                        {lyricsOffset > 0 ? `+${lyricsOffset.toFixed(1)}s` : `${lyricsOffset.toFixed(1)}s`}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setLyricsOffset((prev) => Math.min(10, Number((prev + 0.5).toFixed(1))))}
+                        className="px-2 py-1 rounded-lg text-xs font-bold bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-zinc-700 dark:text-zinc-200 border border-zinc-200 dark:border-zinc-700 transition cursor-pointer shadow-sm"
+                        title="Acelerar / adiantar letra (+0.5s)"
+                      >
+                        +0.5s
+                      </button>
+                    </div>
+                  )}
 
                   <div className="flex items-center gap-1.5">
                     <span className="text-[11px] text-zinc-500 dark:text-zinc-400 font-medium hidden sm:inline">Idioma:</span>
