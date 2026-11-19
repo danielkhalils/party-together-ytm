@@ -189,7 +189,8 @@ async function clientTranslateLinesLineByLine(rawLines, targetLang, concurrency 
 export async function translateSyncedLyrics(lines, targetLang = 'pt', trackId = '') {
   if (!lines || lines.length === 0) return [];
 
-  const cacheKey = `synced_${trackId || lines[0]?.text || ''}_${targetLang}`;
+  const fingerprint = `${lines.length}_${lines[0]?.time ?? 0}_${(lines[0]?.text || '').slice(0, 24)}_${(lines[lines.length - 1]?.text || '').slice(0, 24)}`;
+  const cacheKey = `synced_${trackId}_${targetLang}_${fingerprint}`;
   if (songTranslationCache.has(cacheKey)) {
     return songTranslationCache.get(cacheKey);
   }
@@ -239,7 +240,8 @@ export async function translateSyncedLyrics(lines, targetLang = 'pt', trackId = 
 export async function translatePlainLyrics(plainText, targetLang = 'pt', trackId = '') {
   if (!plainText) return '';
 
-  const cacheKey = `plain_${trackId || plainText.slice(0, 30)}_${targetLang}`;
+  const fingerprint = `${plainText.length}_${plainText.slice(0, 30)}_${plainText.slice(-30)}`;
+  const cacheKey = `plain_${trackId}_${targetLang}_${fingerprint}`;
   if (songTranslationCache.has(cacheKey)) {
     return songTranslationCache.get(cacheKey);
   }

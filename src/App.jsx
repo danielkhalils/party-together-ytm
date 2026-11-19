@@ -1835,15 +1835,24 @@ export default function App() {
     const rawTitle = roomState?.playback?.title;
     const rawArtist = roomState?.playback?.artist;
 
+    setTranslationData((prev) => ({
+      ...prev,
+      videoId: currentVideoId || null,
+      loading: false,
+      synced: [],
+      plain: '',
+      error: null
+    }));
+
     if (!currentVideoId || !rawTitle) {
-      setLyricsData({ loading: false, synced: [], plain: '', error: null });
+      setLyricsData({ videoId: null, loading: false, synced: [], plain: '', error: null });
       return;
     }
 
     let isCancelled = false;
 
     async function fetchSyncedLyrics() {
-      setLyricsData({ loading: true, synced: [], plain: '', error: null });
+      setLyricsData({ videoId: currentVideoId, loading: true, synced: [], plain: '', error: null });
 
       // Limpeza rigorosa de sufixos do YouTube que poluem o título
       const cleanTitle = rawTitle
@@ -1897,6 +1906,7 @@ export default function App() {
           if (bestMatch.syncedLyrics) {
             const parsedLines = parseSyncedLyrics(bestMatch.syncedLyrics);
             setLyricsData({
+              videoId: currentVideoId,
               loading: false,
               synced: parsedLines,
               plain: bestMatch.plainLyrics || '',
@@ -1904,6 +1914,7 @@ export default function App() {
             });
           } else {
             setLyricsData({
+              videoId: currentVideoId,
               loading: false,
               synced: [],
               plain: bestMatch.plainLyrics,
@@ -1912,6 +1923,7 @@ export default function App() {
           }
         } else {
           setLyricsData({
+            videoId: currentVideoId,
             loading: false,
             synced: [],
             plain: '',
@@ -1921,6 +1933,7 @@ export default function App() {
       } catch {
         if (!isCancelled) {
           setLyricsData({
+            videoId: currentVideoId,
             loading: false,
             synced: [],
             plain: '',
@@ -1939,7 +1952,13 @@ export default function App() {
   // 5b. Tradução das Letras obtidas do BetterLyrics (ativada pelo botão de Traduzir na aba Letras)
   useEffect(() => {
     const currentVideoId = roomState?.playback?.videoId;
-    if (!showTranslatedLyrics || !currentVideoId || (!lyricsData.synced.length && !lyricsData.plain)) {
+    if (
+      !showTranslatedLyrics ||
+      !currentVideoId ||
+      lyricsData.loading ||
+      lyricsData.videoId !== currentVideoId ||
+      (!lyricsData.synced.length && !lyricsData.plain)
+    ) {
       if (!showTranslatedLyrics) {
         setTranslationData((prev) => ({ ...prev, loading: false }));
       }
@@ -1949,7 +1968,14 @@ export default function App() {
     let isCancelled = false;
 
     async function doTranslateLyrics() {
-      setTranslationData((prev) => ({ ...prev, loading: true, error: null }));
+      setTranslationData((prev) => ({
+        ...prev,
+        videoId: currentVideoId,
+        loading: true,
+        synced: [],
+        plain: '',
+        error: null
+      }));
       try {
         if (lyricsData.synced.length > 0) {
           const translated = await translateSyncedLyrics(
@@ -1960,6 +1986,7 @@ export default function App() {
           if (isCancelled) return;
           setTranslationData((prev) => ({
             ...prev,
+            videoId: currentVideoId,
             loading: false,
             synced: translated,
             plain: '',
@@ -1974,6 +2001,7 @@ export default function App() {
           if (isCancelled) return;
           setTranslationData((prev) => ({
             ...prev,
+            videoId: currentVideoId,
             loading: false,
             synced: [],
             plain: translatedPlain,
@@ -1984,7 +2012,10 @@ export default function App() {
         if (!isCancelled) {
           setTranslationData((prev) => ({
             ...prev,
+            videoId: currentVideoId,
             loading: false,
+            synced: [],
+            plain: '',
             error: 'Não foi possível traduzir a letra no momento.'
           }));
         }
@@ -1996,7 +2027,7 @@ export default function App() {
     return () => {
       isCancelled = true;
     };
-  }, [showTranslatedLyrics, roomState?.playback?.videoId, lyricsData.synced, lyricsData.plain, translationData.targetLang]);
+  }, [showTranslatedLyrics, roomState?.playback?.videoId, lyricsData.videoId, lyricsData.loading, lyricsData.synced, lyricsData.plain, translationData.targetLang]);
 
   // 6. Inicializa ou atualiza o Player do YouTube quando há uma música ativa na sala
   useEffect(() => {
@@ -2366,7 +2397,7 @@ export default function App() {
       if (lyricScrollFrameRef.current) cancelAnimationFrame(lyricScrollFrameRef.current);
       lyricScrollFrameRef.current = null;
     };
-  }, [activeLyricIndex, activeTab, showTranslatedLyrics]);
+  }, [activeLyricIndex, activeTab, showTranslatedLyrics, translationData.synced, lyricsData.synced]);
 
   const lastKnownChatIdRef = useRef(null);
 
@@ -3954,8 +3985,8 @@ export default function App() {
       {/* Conteúdo Principal */}
       <main className="relative z-10 flex-1 min-h-0 max-w-6xl w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-stretch">
         {/* Coluna Esquerda: Player Sincronizado + Participantes com Avatares Fofos */}
-        <div className="lg:col-span-5 flex flex-col gap-4 min-h-0 h-full">
-          <div className="bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-3xl p-4 sm:p-5 flex flex-col items-center text-center relative overflow-y-auto shadow-xl shrink-0 max-h-[72%]">
+        <div className="lg:col-span-5 flex flex-col gap-4 min-h-0 lg:h-full">
+          <div className="bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-3xl p-4 sm:p-5 flex flex-col items-center text-center relative overflow-hidden shadow-xl shrink-0">
             {/* Desbloqueio de Áudio para Convidados */}
             {!isHost && !audioUnlocked && (
               <div className="absolute inset-0 z-20 bg-zinc-950/90 backdrop-blur-md flex flex-col items-center justify-center p-6">
@@ -3974,7 +4005,7 @@ export default function App() {
             )}
 
             {/* Container do YouTube IFrame Player mantido sempre no DOM */}
-            <div className="w-full aspect-video rounded-2xl overflow-hidden bg-zinc-950 mb-4 border border-zinc-800 shadow-inner flex items-center justify-center relative">
+            <div className="w-full max-w-[440px] lg:max-w-none aspect-video max-h-[34vh] lg:max-h-[28vh] rounded-2xl overflow-hidden bg-zinc-950 mb-3 sm:mb-4 border border-zinc-800 shadow-inner flex items-center justify-center relative">
               <div id="yt-music-player" className={`w-full h-full ${roomState.playback.videoId ? 'block' : 'hidden'}`}></div>
               {!roomState.playback.videoId && (
                 <div className="flex flex-col items-center justify-center p-6 text-zinc-500 absolute inset-0">
@@ -4177,67 +4208,71 @@ export default function App() {
                 <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" /> online
               </span>
             </h4>
-            <div className="flex-1 min-h-0 overflow-y-auto pt-2 pb-2 pr-1 flex flex-wrap content-start gap-2.5 sm:gap-3">
+            <div className="flex-1 min-h-0 overflow-y-auto py-1 flex flex-col gap-2">
               {(roomState.members || []).map((m) => {
                 const isSelf = m.id === userId;
                 return (
                   <div
                     key={m.id}
-                    className={`party-member-card group relative pl-2 pr-3.5 py-1.5 rounded-2xl text-xs sm:text-sm border flex items-center gap-2.5 shadow-sm transition-all hover:scale-[1.02] bg-white dark:bg-zinc-950 ${
+                    className={`party-member-card group relative w-full px-3 py-2 rounded-2xl text-xs sm:text-sm border flex items-center justify-between gap-2.5 shadow-sm transition-colors bg-white dark:bg-zinc-950 ${
                       isSelf
-                        ? 'border-red-500/60 text-red-600 dark:text-red-200'
+                        ? 'party-member-card-self border-red-500/60 text-red-600 dark:text-red-200'
                         : 'border-zinc-200 dark:border-zinc-800 text-zinc-800 dark:text-zinc-200'
                     }`}
                   >
-                    {/* Avatar ampliado com badge pulsante de status online */}
-                    <div className="relative shrink-0">
-                      <img
-                        src={m.avatar || getRandomCuteAvatar(m.name)}
-                        alt={m.name}
-                        className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-zinc-800 object-cover border-2 border-red-500/40 shadow-sm"
-                      />
-                      <span
-                        className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-zinc-950 border border-emerald-300"
-                        title="Online na festa"
-                      />
-                    </div>
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      {/* Avatar ampliado com badge pulsante de status online */}
+                      <div className="relative shrink-0">
+                        <img
+                          src={m.avatar || getRandomCuteAvatar(m.name)}
+                          alt={m.name}
+                          className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-zinc-800 object-cover border-2 border-red-500/40 shadow-sm"
+                        />
+                        <span
+                          className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-zinc-950 border border-emerald-300"
+                          title="Online na festa"
+                        />
+                      </div>
 
-                    <div className="flex flex-col min-w-0">
-                      <div className="flex items-center gap-1.5 leading-tight">
-                        <span className="font-semibold truncate max-w-[120px] sm:max-w-[150px]">
-                          {m.name}
-                        </span>
-                        {m.isHost && (
-                          <Crown className="w-3.5 h-3.5 text-amber-500 shrink-0" title="Anfitrião da Party" />
+                      <div className="flex flex-col min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5 leading-tight min-w-0">
+                          <span className="font-semibold truncate">
+                            {m.name}
+                          </span>
+                          {m.isHost && (
+                            <Crown className="w-3.5 h-3.5 text-amber-500 shrink-0" title="Anfitrião da Party" />
+                          )}
+                        </div>
+                        {isSelf && (
+                          <span className="text-[10px] font-bold text-red-500 dark:text-red-400 leading-none mt-0.5">
+                            (Você)
+                          </span>
                         )}
                       </div>
-                      {isSelf && (
-                        <span className="text-[10px] font-bold text-red-500 dark:text-red-400 leading-none mt-0.5">
-                          (Você)
-                        </span>
-                      )}
                     </div>
 
-                    {isSelf && (
-                      <button
-                        type="button"
-                        title="Alterar seu apelido nesta sala"
-                        onClick={handleOpenEditName}
-                        className="text-zinc-400 hover:text-red-500 dark:hover:text-white transition cursor-pointer ml-0.5 p-1 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-800"
-                      >
-                        <Pencil className="w-3 h-3" />
-                      </button>
-                    )}
-                    {isHost && m.id !== userId && (
-                      <button
-                        type="button"
-                        title={`Remover ${m.name} da party`}
-                        onClick={() => handleHostProcessGuestAction({ type: 'KICK_MEMBER', userId: m.id, senderId: userId })}
-                        className="text-zinc-400 hover:text-red-500 transition cursor-pointer ml-0.5 p-1 rounded-lg hover:bg-red-500/10"
-                      >
-                        <UserX className="w-3.5 h-3.5" />
-                      </button>
-                    )}
+                    <div className="flex items-center shrink-0">
+                      {isSelf && (
+                        <button
+                          type="button"
+                          title="Alterar seu apelido nesta sala"
+                          onClick={handleOpenEditName}
+                          className="text-zinc-400 hover:text-red-500 dark:hover:text-white transition cursor-pointer p-1.5 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-800"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                      {isHost && m.id !== userId && (
+                        <button
+                          type="button"
+                          title={`Remover ${m.name} da party`}
+                          onClick={() => handleHostProcessGuestAction({ type: 'KICK_MEMBER', userId: m.id, senderId: userId })}
+                          className="text-zinc-400 hover:text-red-500 transition cursor-pointer p-1.5 rounded-lg hover:bg-red-500/10"
+                        >
+                          <UserX className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
@@ -4246,7 +4281,7 @@ export default function App() {
         </div>
 
         {/* Coluna Direita: Abas (Buscar Música | Fila Colaborativa | BetterLyrics) */}
-        <div className="lg:col-span-7 flex h-full min-h-[500px] lg:min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900/90 p-4 sm:p-5 shadow-xl">
+        <div className="lg:col-span-7 flex h-[520px] sm:h-[580px] lg:h-full lg:min-h-0 flex-1 flex-col overflow-hidden rounded-3xl border border-zinc-800 bg-zinc-900/90 p-4 sm:p-5 shadow-xl">
           <div className="flex flex-wrap items-center justify-between border-b border-zinc-800 pb-3.5 mb-4 gap-2">
             <div className="flex flex-wrap gap-2">
               <button
@@ -4523,12 +4558,12 @@ export default function App() {
                   <span className="text-sm">Sincronizando letra de &ldquo;{cleanTrackTitle(roomState.playback.title)}&rdquo;...</span>
                 </div>
               ) : showTranslatedLyrics ? (
-                translationData.loading ? (
+                translationData.loading || (translationData.videoId !== roomState.playback.videoId && !translationData.error) ? (
                   <div className="text-center py-16 text-zinc-400 flex flex-col items-center gap-3">
                     <Disc3 className="w-7 h-7 text-amber-500 animate-spin" />
                     <span className="text-sm">Traduzindo letra via BetterLyrics para &ldquo;{cleanTrackTitle(roomState.playback.title)}&rdquo;...</span>
                   </div>
-                ) : translationData.synced.length > 0 ? (
+                ) : translationData.videoId === roomState.playback.videoId && translationData.synced.length > 0 ? (
                   <SyncedTranslatedLyricsList
                     lines={translationData.synced}
                     activeIndex={activeLyricIndex}
@@ -4536,7 +4571,7 @@ export default function App() {
                     activeLineRef={activeLyricRef}
                     seekRef={seekLyricRef}
                   />
-                ) : translationData.plain ? (
+                ) : translationData.videoId === roomState.playback.videoId && translationData.plain ? (
                   <div className="better-lyrics-plain mx-auto max-w-2xl whitespace-pre-line break-words px-4 text-center">
                     <div className="mb-4 text-xs font-semibold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/50 rounded-xl px-3 py-2">
                       Tradução estática da letra (esta faixa não possui marcação de tempo):
