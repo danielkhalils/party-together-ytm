@@ -127,7 +127,56 @@ const MAX_AVATAR_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_AVATAR_DATA_LENGTH = 12000;
 const PRESENCE_HEARTBEAT_MS = 15000;
 const PRESENCE_TIMEOUT_MS = 45000;
-const CHAT_REACTIONS = ['👍', '❤️', '😂', '🔥', '🎉'];
+const CHAT_REACTIONS = ['👍', '❤️', '😂', '🔥', '🎉', '👏', '🎵'];
+const PARTY_EFFECT_TYPES = [
+  { id: 'balloons', emoji: '🎈', label: 'Balões', verb: 'soltou balões na festa!' },
+  { id: 'fireworks', emoji: '🎆', label: 'Fogos', verb: 'soltou fogos de artifício!' },
+  { id: 'confetti', emoji: '🎊', label: 'Confete', verb: 'jogou confetes na pista!' },
+  { id: 'party_items', emoji: '🪩', label: 'Festa', verb: 'animou a pista com itens de festa!' }
+];
+const PARTY_SCORE_POINTS = {
+  ADD_TRACK: 5,
+  CHAT_MESSAGE: 2,
+  VOTE_TRACK: 2,
+  VOTE_SKIP: 1,
+  CREATE_POLL: 3,
+  VOTE_POLL: 2,
+  PARTY_EFFECT: 2
+};
+
+function incrementPartyScore(room, targetUserId, points, category = 'other') {
+  if (!room || !targetUserId || targetUserId === 'system' || !points) {
+    return room?.partyScores || {};
+  }
+  const prevScores = room.partyScores || {};
+  const current = prevScores[targetUserId] || { score: 0, messages: 0, tracks: 0, votes: 0, celebrations: 0 };
+  return {
+    ...prevScores,
+    [targetUserId]: {
+      ...current,
+      score: (Number(current.score) || 0) + points,
+      [category]: (Number(current[category]) || 0) + 1
+    }
+  };
+}
+
+function getPartyKing(room) {
+  if (!room) return null;
+  const scores = room.partyScores || {};
+  const members = room.members || [];
+  let bestMember = null;
+  let bestScore = 0;
+
+  for (const member of members) {
+    const entry = scores[member.id];
+    const score = Number(entry?.score) || 0;
+    if (score > bestScore) {
+      bestScore = score;
+      bestMember = { ...member, score, stats: entry };
+    }
+  }
+  return bestMember;
+}
 const CHAT_COLOR_PALETTE = [
   '#ff6b6b', '#ff9f43', '#feca57', '#1dd1a1', '#00d2d3', '#54a0ff', '#5f27cd', '#ff6bcb',
   '#c8d96f', '#48dbfb', '#ee5253', '#a55eea', '#26de81', '#fd9644', '#2bcbba', '#778beb'
@@ -234,23 +283,301 @@ function ensureMemberChatColors(room) {
       text: String(message.text || '').slice(0, MAX_CHAT_CHARACTERS),
       gifKind: tenorGif?.kind,
       gifUrl: tenorGif?.url,
-      color: colorsById.get(message.senderId) || message.color || getUserColor(message.senderId)
+      color: colorsById.get(message.senderId) || message.color || getUserColor(message.senderId),
+      editedAt: message.editedAt || undefined
     };
     return Object.keys(normalized).every((key) => message[key] === normalized[key]) ? message : { ...message, ...normalized };
   });
   return { ...room, members, chat };
 }
 
-const ChatMessageBubble = React.memo(function ChatMessageBubble({ message }) {
+const BALLOON_COLORS = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#a855f7', '#ec4899', '#06b6d4', '#f97316'];
+const CONFETTI_COLORS = ['#ef4444', '#facc15', '#22c55e', '#38bdf8', '#c084fc', '#fb7185', '#fb923c', '#ffffff'];
+const PARTY_FLOATING_ITEMS = ['🪩', '🎉', '🥳', '🎸', '🥂', '⭐', '🔥', '🎶', '💃', '🕺', '🎺', '✨'];
+
+function buildPartyEffectParticles(effectType, seedBase) {
+  let seed = seedBase % 2147483647;
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed - 1) / 2147483646;
+  };
+
+  if (effectType === 'balloons') {
+    return Array.from({ length: 18 }, (_, i) => ({
+      id: `b_${i}`,
+      left: 4 + rand() * 90,
+      color: BALLOON_COLORS[i % BALLOON_COLORS.length],
+      size: 36 + Math.round(rand() * 18),
+      delay: Number((rand() * 1.1).toFixed(2)),
+      dur: Number((3.4 + rand() * 1.4).toFixed(2)),
+      sway: Math.round((rand() - 0.5) * 90)
+    }));
+  }
+
+  if (effectType === 'fireworks') {
+    const bursts = Array.from({ length: 5 }, (_, b) => {
+      const cx = 16 + rand() * 68;
+      const cy = 14 + rand() * 44;
+      const burstDelay = Number((b * 0.42 + rand() * 0.25).toFixed(2));
+      const baseColor = CONFETTI_COLORS[b % CONFETTI_COLORS.length];
+      const sparks = Array.from({ length: 16 }, (_, s) => {
+        const angle = (Math.PI * 2 * s) / 16 + (rand() - 0.5) * 0.25;
+        const dist = 55 + rand() * 75;
+        return {
+          id: `s_${b}_${s}`,
+          tx: Math.round(Math.cos(angle) * dist),
+          ty: Math.round(Math.sin(angle) * dist),
+          color: s % 3 === 0 ? '#ffffff' : CONFETTI_COLORS[(b + s) % CONFETTI_COLORS.length],
+          dur: Number((0.95 + rand() * 0.55).toFixed(2))
+        };
+      });
+      return { id: `fw_${b}`, cx, cy, delay: burstDelay, baseColor, sparks };
+    });
+    return bursts;
+  }
+
+  if (effectType === 'confetti') {
+    return Array.from({ length: 42 }, (_, i) => ({
+      id: `c_${i}`,
+      left: 2 + rand() * 96,
+      color: CONFETTI_COLORS[i % CONFETTI_COLORS.length],
+      w: 7 + Math.round(rand() * 6),
+      h: 10 + Math.round(rand() * 9),
+      delay: Number((rand() * 0.9).toFixed(2)),
+      dur: Number((2.6 + rand() * 1.6).toFixed(2)),
+      drift: Math.round((rand() - 0.5) * 140),
+      spin: Math.round((rand() > 0.5 ? 1 : -1) * (360 + rand() * 540))
+    }));
+  }
+
+  return Array.from({ length: 20 }, (_, i) => ({
+    id: `p_${i}`,
+    left: 4 + rand() * 92,
+    emoji: PARTY_FLOATING_ITEMS[i % PARTY_FLOATING_ITEMS.length],
+    size: 26 + Math.round(rand() * 20),
+    delay: Number((rand() * 1.1).toFixed(2)),
+    dur: Number((3.0 + rand() * 1.4).toFixed(2)),
+    sway: Math.round((rand() - 0.5) * 100),
+    spin: Math.round((rand() - 0.5) * 50)
+  }));
+}
+
+const PartyEffectsOverlay = React.memo(function PartyEffectsOverlay({ effects }) {
+  if (!effects || effects.length === 0) return null;
+  const latestEffect = effects[effects.length - 1];
+  const latestMeta = PARTY_EFFECT_TYPES.find((item) => item.id === latestEffect.type) || PARTY_EFFECT_TYPES[0];
+
+  return createPortal(
+    <div className="pointer-events-none fixed inset-0 z-[90] overflow-hidden select-none" aria-hidden="true">
+      {latestEffect && (
+        <div
+          key={`toast_${latestEffect.id}`}
+          className="party-effect-toast fixed top-20 left-1/2 z-[95] flex items-center gap-2 rounded-full border border-amber-400/50 bg-zinc-950/90 px-4 py-2 text-xs font-bold text-white shadow-2xl backdrop-blur-md"
+        >
+          <span className="text-base">{latestMeta.emoji}</span>
+          <span>
+            <strong className="text-amber-300">{latestEffect.senderName}</strong> {latestMeta.verb}
+          </span>
+        </div>
+      )}
+
+      {effects.map((effect) => {
+        if (effect.type === 'balloons') {
+          return (
+            <div key={effect.id} className="absolute inset-0">
+              {effect.particles.map((p) => (
+                <div
+                  key={p.id}
+                  className="party-balloon absolute bottom-0"
+                  style={{
+                    left: `${p.left}%`,
+                    '--delay': `${p.delay}s`,
+                    '--dur': `${p.dur}s`,
+                    '--sway': `${p.sway}px`
+                  }}
+                >
+                  <svg width={p.size} height={Math.round(p.size * 1.45)} viewBox="0 0 40 58" fill="none">
+                    <ellipse cx="20" cy="20" rx="16" ry="19" fill={p.color} fillOpacity="0.92" />
+                    <ellipse cx="14" cy="13" rx="4" ry="7" fill="white" fillOpacity="0.32" transform="rotate(-18 14 13)" />
+                    <polygon points="17,39 23,39 20,43" fill={p.color} />
+                    <path d="M20 43 Q16 49 21 56" stroke="rgba(255,255,255,0.65)" strokeWidth="1.4" fill="none" />
+                  </svg>
+                </div>
+              ))}
+            </div>
+          );
+        }
+
+        if (effect.type === 'fireworks') {
+          return (
+            <div key={effect.id} className="absolute inset-0">
+              {effect.particles.map((burst) => (
+                <div
+                  key={burst.id}
+                  className="absolute"
+                  style={{ left: `${burst.cx}%`, top: `${burst.cy}%` }}
+                >
+                  <div
+                    className="party-firework-flash absolute -left-4 -top-4 h-8 w-8 rounded-full blur-sm"
+                    style={{ backgroundColor: burst.baseColor, '--delay': `${burst.delay}s` }}
+                  />
+                  {burst.sparks.map((spark) => (
+                    <span
+                      key={spark.id}
+                      className="party-firework-spark absolute h-2 w-2 rounded-full"
+                      style={{
+                        backgroundColor: spark.color,
+                        boxShadow: `0 0 10px 2px ${spark.color}`,
+                        '--tx': `${spark.tx}px`,
+                        '--ty': `${spark.ty}px`,
+                        '--delay': `${burst.delay}s`,
+                        '--dur': `${spark.dur}s`
+                      }}
+                    />
+                  ))}
+                </div>
+              ))}
+            </div>
+          );
+        }
+
+        if (effect.type === 'confetti') {
+          return (
+            <div key={effect.id} className="absolute inset-0">
+              {effect.particles.map((p) => (
+                <span
+                  key={p.id}
+                  className="party-confetti absolute top-0 rounded-xs"
+                  style={{
+                    left: `${p.left}%`,
+                    width: `${p.w}px`,
+                    height: `${p.h}px`,
+                    backgroundColor: p.color,
+                    '--delay': `${p.delay}s`,
+                    '--dur': `${p.dur}s`,
+                    '--drift': `${p.drift}px`,
+                    '--spin': `${p.spin}deg`
+                  }}
+                />
+              ))}
+            </div>
+          );
+        }
+
+        return (
+          <div key={effect.id} className="absolute inset-0">
+            {effect.particles.map((p) => (
+              <span
+                key={p.id}
+                className="party-item-float absolute bottom-0 drop-shadow-lg"
+                style={{
+                  left: `${p.left}%`,
+                  fontSize: `${p.size}px`,
+                  '--delay': `${p.delay}s`,
+                  '--dur': `${p.dur}s`,
+                  '--sway': `${p.sway}px`,
+                  '--spin': `${p.spin}deg`
+                }}
+              >
+                {p.emoji}
+              </span>
+            ))}
+          </div>
+        );
+      })}
+    </div>,
+    document.body
+  );
+});
+
+const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, isAuthor, isPartyKing, onEdit, onDelete }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editDraft, setEditDraft] = useState(message.text || '');
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  const handleStartEdit = () => {
+    setEditDraft(message.text || '');
+    setConfirmingDelete(false);
+    setIsEditing(true);
+  };
+
+  const handleSaveEdit = (event) => {
+    if (event) event.preventDefault();
+    const cleaned = editDraft.trim().slice(0, MAX_CHAT_CHARACTERS);
+    if (!cleaned) return;
+    if (cleaned !== message.text) {
+      onEdit?.(message.id, cleaned);
+    }
+    setIsEditing(false);
+  };
+
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-950/80 px-3 py-2.5">
-      <div className="mb-1 flex items-baseline justify-between gap-2">
-        <span className="truncate text-xs font-bold" style={{ color: message.color }}>
-          {message.senderName}
-        </span>
-        <time className="shrink-0 text-[10px] text-zinc-600">
-          {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-        </time>
+    <div className="group rounded-xl border border-zinc-800 bg-zinc-950/80 px-3 py-2.5">
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate text-xs font-bold" style={{ color: message.color }}>
+            {message.senderName}
+          </span>
+          {isPartyKing && (
+            <span
+              className="inline-flex shrink-0 items-center gap-0.5 rounded-full border border-amber-500/50 bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-extrabold text-amber-300"
+              title="Rei da Festa"
+            >
+              <Crown className="h-2.5 w-2.5 text-amber-400" /> Rei
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {isAuthor && !isEditing && (
+            <div className="flex items-center gap-1 opacity-80 transition sm:opacity-0 sm:group-hover:opacity-100">
+              {message.type !== 'gif' && (
+                <button
+                  type="button"
+                  onClick={handleStartEdit}
+                  title="Editar comentário"
+                  className="rounded p-1 text-zinc-400 hover:bg-zinc-800 hover:text-amber-300 cursor-pointer"
+                  aria-label="Editar comentário"
+                >
+                  <Pencil className="h-3 w-3" />
+                </button>
+              )}
+              {confirmingDelete ? (
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => onDelete?.(message.id)}
+                    className="rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold text-white hover:bg-red-500 cursor-pointer"
+                  >
+                    Excluir
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDelete(false)}
+                    className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-semibold text-zinc-300 hover:bg-zinc-700 cursor-pointer"
+                  >
+                    Não
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(true)}
+                  title="Excluir comentário"
+                  className="rounded p-1 text-zinc-400 hover:bg-red-950/60 hover:text-red-400 cursor-pointer"
+                  aria-label="Excluir comentário"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              )}
+            </div>
+          )}
+          {message.editedAt && (
+            <span className="text-[10px] italic text-zinc-500">(editado)</span>
+          )}
+          <time className="shrink-0 text-[10px] text-zinc-600">
+            {new Date(message.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </time>
+        </div>
       </div>
       {message.type === 'gif' ? (
         message.gifKind === 'image' ? (
@@ -267,6 +594,39 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message }) {
             Abrir GIF no Tenor
           </a>
         )
+      ) : isEditing ? (
+        <form onSubmit={handleSaveEdit} className="mt-1 flex items-center gap-1.5">
+          <input
+            type="text"
+            value={editDraft}
+            onChange={(event) => setEditDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.preventDefault();
+                setIsEditing(false);
+              }
+            }}
+            maxLength={MAX_CHAT_CHARACTERS}
+            autoFocus
+            className="min-w-0 flex-1 rounded-lg border border-amber-500/60 bg-zinc-900 px-2.5 py-1 text-xs text-white focus:outline-none"
+          />
+          <button
+            type="submit"
+            disabled={!editDraft.trim()}
+            className="rounded-lg bg-emerald-600 p-1.5 text-white hover:bg-emerald-500 disabled:opacity-40 cursor-pointer"
+            title="Salvar edição"
+          >
+            <Check className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setIsEditing(false)}
+            className="rounded-lg bg-zinc-800 p-1.5 text-zinc-300 hover:bg-zinc-700 cursor-pointer"
+            title="Cancelar edição"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </form>
       ) : (
         <p className="break-words whitespace-pre-wrap text-sm text-zinc-200">{message.text}</p>
       )}
@@ -518,6 +878,10 @@ function NewsPanel({ onClose }) {
           <button onClick={onClose} className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white" aria-label="Fechar novidades"><X className="h-5 w-5" /></button>
         </div>
         <ul className="max-h-[65vh] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden space-y-2.5 text-sm text-zinc-300">
+          <li>• <strong>Rei da Festa:</strong> interaja no chat, adicione músicas, vote e solte efeitos para acumular pontos e conquistar a coroa de Rei da Festa!</li>
+          <li>• <strong>Animações de Festa ao Vivo:</strong> solte balões, fogos de artifício, confetes e itens de festa sincronizados na tela de todos os participantes.</li>
+          <li>• <strong>Chat Aprimorado:</strong> agora você pode editar ou excluir seus próprios comentários, e clicar nos emojis adiciona ao campo de texto antes de enviar com Enter ou clique.</li>
+          <li>• <strong>Player Mais Estável e Sincronização Global:</strong> corrigidos bugs de repetição de trechos, travamentos e músicas que não finalizavam; quando o anfitrião clica em &ldquo;Sincronizar player&rdquo;, todos os participantes sincronizam juntos.</li>
           <li>• <strong>Importar Playlist do YouTube / YT Music:</strong> cole o link de uma playlist na busca para extrair e adicionar até 100 músicas automaticamente uma por uma na fila da party.</li>
           <li>• <strong>Sugestões na Busca:</strong> enquanto uma música está tocando, a aba Buscar Música sugere automaticamente faixas parecidas antes mesmo de você digitar.</li>
           <li>• <strong>Enquete de Tema no Chat:</strong> qualquer participante pode criar uma enquete (pelo chat ou pelo botão no topo) para votar no próximo tema da party, e o anfitrião pode aplicar o tema vencedor com um clique.</li>
@@ -1113,6 +1477,9 @@ export default function App() {
   const [localProgress, setLocalProgress] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isResyncingPlayer, setIsResyncingPlayer] = useState(false);
+  const [syncStatusMsg, setSyncStatusMsg] = useState('');
+  const [activePartyEffects, setActivePartyEffects] = useState([]);
+  const [effectCooldown, setEffectCooldown] = useState(false);
 
   // Estados da Busca (Inicia VAZIA a critério do usuário)
   const [searchQuery, setSearchQuery] = useState('');
@@ -1146,6 +1513,9 @@ export default function App() {
   const closeTenorGifModal = useCallback(() => setShowGifInput(false), []);
   const chatMessagesContainerRef = useRef(null);
   const chatEndRef = useRef(null);
+  const chatInputRef = useRef(null);
+  const lastPlayedEffectIdRef = useRef(null);
+  const lastEffectTriggeredAtRef = useRef(0);
   const [isChatAtBottom, setIsChatAtBottom] = useState(true);
   const [hasNewMessagesBelow, setHasNewMessagesBelow] = useState(false);
   const isChatAtBottomRef = useRef(true);
@@ -1262,6 +1632,11 @@ export default function App() {
   const lastHostTimeRef = useRef(0);
   const lastHostCheckAtRef = useRef(0);
   const playerControlsHostModeRef = useRef(null);
+  const playbackReceivedAtRef = useRef({ updatedAt: 0, localTime: 0 });
+  const lastHandledSyncNonceRef = useRef(0);
+  const lastGuestAutoSeekAtRef = useRef(0);
+  const loadingVideoRef = useRef({ videoId: null, at: 0 });
+  const hostStallTrackerRef = useRef({ videoId: null, lastTime: -1, lastMovedAt: 0, recoveryTriedAt: 0 });
 
   // 1. Atualiza o Favicon do navegador com o novo ícone da aplicação
   useEffect(() => {
@@ -1426,6 +1801,9 @@ export default function App() {
         setRoomState((prev) => {
           if (!prev) {
             roomRevisionRef.current = Number(nextRoom.stateVersion) || 0;
+            if (nextRoom.playback?.updatedAt) {
+              playbackReceivedAtRef.current = { updatedAt: nextRoom.playback.updatedAt, localTime: Date.now() };
+            }
             return nextRoom;
           }
           const currentVersion = Number(prev.stateVersion) || 0;
@@ -1436,6 +1814,13 @@ export default function App() {
             return prev;
           }
           roomRevisionRef.current = Math.max(roomRevisionRef.current, remoteVersion);
+
+          if (
+            nextRoom.playback?.updatedAt &&
+            nextRoom.playback.updatedAt !== playbackReceivedAtRef.current.updatedAt
+          ) {
+            playbackReceivedAtRef.current = { updatedAt: nextRoom.playback.updatedAt, localTime: Date.now() };
+          }
 
           // Enquanto o convidado aguarda confirmação de entrada pelo host, preserva sua presença local otimista
           let mergedMembers = nextRoom.members || [];
@@ -1448,7 +1833,7 @@ export default function App() {
           const mergedChat = (nextRoom.chat || []).map((message) => {
             const previous = previousMessages.get(message.id);
             if (!previous) return message;
-            const sameMessage = ['senderId', 'senderName', 'type', 'text', 'gifKind', 'gifUrl', 'color', 'createdAt']
+            const sameMessage = ['senderId', 'senderName', 'type', 'text', 'gifKind', 'gifUrl', 'color', 'createdAt', 'editedAt']
               .every((key) => previous[key] === message[key]);
             return sameMessage ? previous : message;
           });
@@ -1563,14 +1948,20 @@ export default function App() {
       );
       if (alreadyActive) return;
 
+      const nextScores = incrementPartyScore(currentRoom, action.senderId, PARTY_SCORE_POINTS.ADD_TRACK, 'tracks');
+
       // Se não havia nenhuma música tocando na sala, começa imediatamente!
       if (!currentRoom.playback.videoId) {
         const playlistItem = { ...createPlaylistItem(track, action.senderName || 'Convidado', 'playing'), addedById: action.senderId };
+        lastAdvancedTrackRef.current = null;
+        loadingVideoRef.current = { videoId: track.videoId, at: Date.now() };
+        hostStallTrackerRef.current = { videoId: track.videoId, lastTime: -1, lastMovedAt: Date.now(), recoveryTriedAt: 0 };
         if (playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
-          playerRef.current.loadVideoById(track.videoId);
+          playerRef.current.loadVideoById({ videoId: track.videoId, startSeconds: 0 });
         }
         broadcastRoomState({
           ...currentRoom,
+          partyScores: nextScores,
           playlist: [...(currentRoom.playlist || []), playlistItem],
           playback: {
             videoId: track.videoId,
@@ -1591,6 +1982,7 @@ export default function App() {
         const newQueueItem = { ...createPlaylistItem(track, action.senderName || 'Convidado'), addedById: action.senderId, voters: action.senderId ? [action.senderId] : [] };
         broadcastRoomState({
           ...currentRoom,
+          partyScores: nextScores,
           queue: [...(currentRoom.queue || []), newQueueItem],
           playlist: [...(currentRoom.playlist || []), newQueueItem]
         });
@@ -1612,7 +2004,10 @@ export default function App() {
 
       broadcastRoomState({
         ...currentRoom,
-        queue: updatedQueue
+        queue: updatedQueue,
+        partyScores: !hasVoted
+          ? incrementPartyScore(currentRoom, action.senderId, PARTY_SCORE_POINTS.VOTE_TRACK, 'votes')
+          : currentRoom.partyScores
       });
     } else if (action.type === 'VOTE_SKIP_TRACK') {
       if (!currentRoom.playback?.videoId || !action.senderId) return;
@@ -1627,7 +2022,10 @@ export default function App() {
       );
       broadcastRoomState({
         ...currentRoom,
-        playback: nextPlayback
+        playback: nextPlayback,
+        partyScores: !hasVotedSkip
+          ? incrementPartyScore(currentRoom, action.senderId, PARTY_SCORE_POINTS.VOTE_SKIP, 'votes')
+          : currentRoom.partyScores
       });
     } else if (action.type === 'RENAME_USER') {
       if (!action.userId || !action.newName) return;
@@ -1772,22 +2170,28 @@ export default function App() {
       broadcastRoomState({
         ...currentRoom,
         themePoll: poll,
-        chat: chatMessages
+        chat: chatMessages,
+        partyScores: incrementPartyScore(currentRoom, action.senderId, PARTY_SCORE_POINTS.CREATE_POLL, 'votes')
       });
     } else if (action.type === 'VOTE_THEME_POLL') {
       const poll = currentRoom.themePoll;
       if (!poll || !action.senderId || !action.optionId) return;
+      let addedVote = false;
       const nextOptions = (poll.options || []).map((opt) => {
         const votersWithoutUser = (opt.voters || []).filter((id) => id !== action.senderId);
         if (opt.id === action.optionId) {
           const alreadyVotedHere = (opt.voters || []).includes(action.senderId);
+          if (!alreadyVotedHere) addedVote = true;
           return { ...opt, voters: alreadyVotedHere ? votersWithoutUser : [...votersWithoutUser, action.senderId] };
         }
         return { ...opt, voters: votersWithoutUser };
       });
       broadcastRoomState({
         ...currentRoom,
-        themePoll: { ...poll, options: nextOptions }
+        themePoll: { ...poll, options: nextOptions },
+        partyScores: addedVote
+          ? incrementPartyScore(currentRoom, action.senderId, PARTY_SCORE_POINTS.VOTE_POLL, 'votes')
+          : currentRoom.partyScores
       });
     } else if (action.type === 'APPLY_THEME_POLL') {
       if (action.senderId !== currentRoom.hostId || !currentRoom.themePoll) return;
@@ -1851,7 +2255,53 @@ export default function App() {
         color: sender?.color || getUserColor(message.senderId),
         createdAt: Date.now()
       }].slice(-MAX_CHAT_MESSAGES);
-      broadcastRoomState({ ...currentRoom, chat: messages });
+      broadcastRoomState({
+        ...currentRoom,
+        chat: messages,
+        partyScores: message.senderId !== 'system'
+          ? incrementPartyScore(currentRoom, message.senderId, PARTY_SCORE_POINTS.CHAT_MESSAGE, 'messages')
+          : currentRoom.partyScores
+      });
+    } else if (action.type === 'EDIT_CHAT_MESSAGE') {
+      if (!action.messageId || !action.senderId) return;
+      const cleanText = String(action.text || '').trim().slice(0, MAX_CHAT_CHARACTERS);
+      if (!cleanText) return;
+      let changed = false;
+      const updatedChat = (currentRoom.chat || []).map((msg) => {
+        if (msg.id !== action.messageId) return msg;
+        if (msg.senderId !== action.senderId || msg.type === 'gif') return msg;
+        if (msg.text === cleanText) return msg;
+        changed = true;
+        return { ...msg, text: cleanText, editedAt: Date.now() };
+      });
+      if (changed) {
+        broadcastRoomState({ ...currentRoom, chat: updatedChat });
+      }
+    } else if (action.type === 'DELETE_CHAT_MESSAGE') {
+      if (!action.messageId || !action.senderId) return;
+      const target = (currentRoom.chat || []).find((msg) => msg.id === action.messageId);
+      if (!target || target.senderId !== action.senderId) return;
+      broadcastRoomState({
+        ...currentRoom,
+        chat: (currentRoom.chat || []).filter((msg) => msg.id !== action.messageId)
+      });
+    } else if (action.type === 'TRIGGER_PARTY_EFFECT') {
+      if (!action.senderId || !action.effectType) return;
+      const validEffect = PARTY_EFFECT_TYPES.some((item) => item.id === action.effectType);
+      if (!validEffect) return;
+      const sender = (currentRoom.members || []).find((member) => member.id === action.senderId);
+      const effectId = action.effectId || `fx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      broadcastRoomState({
+        ...currentRoom,
+        partyScores: incrementPartyScore(currentRoom, action.senderId, PARTY_SCORE_POINTS.PARTY_EFFECT, 'celebrations'),
+        partyEffect: {
+          id: effectId,
+          type: action.effectType,
+          senderId: action.senderId,
+          senderName: String(sender?.name || action.senderName || 'Convidado').slice(0, 32),
+          createdAt: Date.now()
+        }
+      });
     }
   };
 
@@ -2236,21 +2686,26 @@ export default function App() {
                 return;
               }
 
-              // Se o administrador avançou/retrocedeu pela barra nativa do YouTube, propaga imediatamente
-              if (isHostRef.current) {
+              // Se o administrador avançou/retrocedeu pela barra nativa do YouTube (somente quando PLAYING ou PAUSED, nunca em BUFFERING)
+              if (
+                isHostRef.current &&
+                (event.data === window.YT.PlayerState.PLAYING || event.data === window.YT.PlayerState.PAUSED)
+              ) {
                 const currentRoom = roomStateRef.current;
+                const now = Date.now();
+                const isRecentlyLoaded = now - loadingVideoRef.current.at < 2200;
                 const curr = event.target?.getCurrentTime?.() || 0;
-                if (currentRoom?.playback?.videoId) {
+                if (currentRoom?.playback?.videoId && !isRecentlyLoaded) {
                   lastHostVideoIdRef.current = currentRoom.playback.videoId;
                   const elapsed = currentRoom.playback.isPlaying && event.data !== window.YT.PlayerState.PAUSED
-                    ? Math.max(0, (Date.now() - (currentRoom.playback.updatedAt || Date.now())) / 1000)
+                    ? Math.max(0, (now - (currentRoom.playback.updatedAt || now)) / 1000)
                     : 0;
                   const expectedPos = (Number(currentRoom.playback.trackPosition) || 0) + elapsed;
-                  if (Math.abs(curr - expectedPos) > 1.0) {
-                    const isNowPlaying = event.data === window.YT.PlayerState.PLAYING ||
-                      (currentRoom.playback.isPlaying && event.data !== window.YT.PlayerState.PAUSED);
+                  const isNowPlaying = event.data === window.YT.PlayerState.PLAYING;
+                  const playStateChanged = isNowPlaying !== Boolean(currentRoom.playback.isPlaying);
+                  if (Math.abs(curr - expectedPos) > 1.5 || playStateChanged) {
                     lastHostTimeRef.current = curr;
-                    lastHostCheckAtRef.current = Date.now();
+                    lastHostCheckAtRef.current = now;
                     setLocalProgress(curr);
                     broadcastRoomState({
                       ...currentRoom,
@@ -2258,7 +2713,8 @@ export default function App() {
                         ...currentRoom.playback,
                         trackPosition: curr,
                         isPlaying: isNowPlaying,
-                        updatedAt: Date.now()
+                        updatedAt: now,
+                        lastSeekAt: Math.abs(curr - expectedPos) > 1.5 ? now : currentRoom.playback.lastSeekAt
                       }
                     });
                   }
@@ -2273,7 +2729,7 @@ export default function App() {
                     if (roomStateRef.current?.playback?.isPlaying && playerRef.current?.getPlayerState?.() === window.YT.PlayerState.PAUSED) {
                       playerRef.current?.playVideo();
                     }
-                  }, 250);
+                  }, 400);
                 }
               }
             },
@@ -2293,49 +2749,141 @@ export default function App() {
     }
   }, [inRoom, audioUnlocked, isHost, roomState?.playback?.videoId]);
 
-  // 7. Sincronização de vídeo e Drift Correction (Regra dos 2 segundos)
-  const syncGuestPlayerWithRoom = (player, state) => {
+  // Calcula a posição esperada da música compensando diferenças de relógio entre dispositivos
+  const computePlaybackTargetPosition = (playback) => {
+    if (!playback) return 0;
+    const basePos = Number(playback.trackPosition) || 0;
+    if (!playback.isPlaying) return Math.max(0, basePos);
+    const now = Date.now();
+    // Para convidados, usa o horário local em que o snapshot foi recebido para evitar clock skew entre PCs
+    const referenceTime =
+      !isHostRef.current &&
+      playbackReceivedAtRef.current.updatedAt === playback.updatedAt &&
+      playbackReceivedAtRef.current.localTime > 0
+        ? playbackReceivedAtRef.current.localTime
+        : (playback.updatedAt || now);
+    const elapsedSeconds = Math.max(0, Math.min(3600, (now - referenceTime) / 1000));
+    return Math.max(0, basePos + elapsedSeconds);
+  };
+
+  // 7. Sincronização de vídeo e Drift Correction (sem causar loop/repetição de trechos ou travamentos)
+  const syncGuestPlayerWithRoom = (player, state, { force = false } = {}) => {
     if (!player || typeof player.getCurrentTime !== 'function') return;
 
-    const { videoId, isPlaying, trackPosition, updatedAt } = state.playback;
+    const { videoId, isPlaying, lastSeekAt } = state.playback;
     if (!videoId) {
       player.stopVideo?.();
       return;
     }
 
+    const now = Date.now();
+    const targetTime = computePlaybackTargetPosition(state.playback);
     const loadedVideoUrl = player.getVideoUrl ? player.getVideoUrl() : '';
-    if (!loadedVideoUrl || !loadedVideoUrl.includes(videoId)) {
-      if (typeof player.loadVideoById === 'function') {
-        player.loadVideoById(videoId);
-      }
-    }
+    const isDifferentVideo = !loadedVideoUrl || !loadedVideoUrl.includes(videoId);
 
-    const elapsedSeconds = isPlaying ? Math.max(0, (Date.now() - updatedAt) / 1000) : 0;
-    const targetTime = (Number(trackPosition) || 0) + elapsedSeconds;
-    const currentLocalTime = player.getCurrentTime() || 0;
-    const drift = Math.abs(currentLocalTime - targetTime);
-    const isRecentSeek = (Date.now() - updatedAt) < 2500;
+    if (isDifferentVideo || force) {
+      const alreadyLoadingSameVideo =
+        !force &&
+        loadingVideoRef.current.videoId === videoId &&
+        now - loadingVideoRef.current.at < 2500;
+      if (alreadyLoadingSameVideo) return;
 
-    if (drift > (isRecentSeek ? 0.8 : 1.5)) {
-      if (typeof player.seekTo === 'function') {
-        player.seekTo(targetTime, true);
+      loadingVideoRef.current = { videoId, at: now };
+      lastGuestAutoSeekAtRef.current = now;
+      if (typeof player.loadVideoById === 'function' && typeof player.cueVideoById === 'function') {
+        const loadMethod = isPlaying ? player.loadVideoById : player.cueVideoById;
+        loadMethod.call(player, { videoId, startSeconds: targetTime });
+        if (isPlaying) player.playVideo?.();
+      } else if (typeof player.loadVideoById === 'function') {
+        player.loadVideoById(videoId, targetTime);
       }
       setLocalProgress(targetTime);
       if (isHostRef.current) {
         lastHostTimeRef.current = targetTime;
-        lastHostCheckAtRef.current = Date.now();
+        lastHostCheckAtRef.current = now;
+      }
+      return;
+    }
+
+    const playerState = typeof player.getPlayerState === 'function' ? player.getPlayerState() : -1;
+    const isBufferingOrLoading =
+      playerState === 3 || // BUFFERING
+      playerState === -1 || // UNSTARTED
+      now - loadingVideoRef.current.at < 2500;
+
+    if (!isBufferingOrLoading) {
+      const currentLocalTime = player.getCurrentTime() || 0;
+      const drift = Math.abs(currentLocalTime - targetTime);
+      const isExplicitHostSeek = Boolean(lastSeekAt && now - lastSeekAt < 3500);
+      const canAutoSeek = isExplicitHostSeek || now - lastGuestAutoSeekAtRef.current > 4500;
+      const driftThreshold = isExplicitHostSeek ? 1.1 : 2.8;
+
+      if (drift > driftThreshold && canAutoSeek) {
+        lastGuestAutoSeekAtRef.current = now;
+        if (typeof player.seekTo === 'function') {
+          player.seekTo(targetTime, true);
+        }
+        setLocalProgress(targetTime);
+        if (isHostRef.current) {
+          lastHostTimeRef.current = targetTime;
+          lastHostCheckAtRef.current = now;
+        }
       }
     }
 
     if (typeof player.getPlayerState === 'function') {
-      const playerState = player.getPlayerState();
-      if (isPlaying && playerState !== 1) {
+      if (isPlaying && playerState !== 1 && playerState !== 3) {
         player.playVideo();
-      } else if (!isPlaying && playerState !== 2) {
+      } else if (!isPlaying && playerState !== 2 && playerState !== 5) {
         player.pauseVideo();
       }
     }
   };
+
+  // Quando o anfitrião clicar em "Sincronizar Player", força a sincronização imediata em todos os convidados
+  useEffect(() => {
+    const syncNonce = roomState?.playback?.syncNonce;
+    if (!inRoom || !syncNonce || syncNonce <= lastHandledSyncNonceRef.current) return;
+    lastHandledSyncNonceRef.current = syncNonce;
+
+    if (!isHostRef.current && roomState?.playback?.videoId) {
+      setIsResyncingPlayer(true);
+      setSyncStatusMsg('Sincronizado pelo anfitrião!');
+      if (playerRef.current) {
+        syncGuestPlayerWithRoom(playerRef.current, roomState, { force: true });
+      } else {
+        manualSyncPendingRef.current = true;
+      }
+      const timer = window.setTimeout(() => {
+        setIsResyncingPlayer(false);
+        setSyncStatusMsg('');
+      }, 2200);
+      return () => window.clearTimeout(timer);
+    }
+  }, [inRoom, roomState?.playback?.syncNonce]);
+
+  // Dispara animações de festa (balões, fogos, confetes e itens) sincronizadas para todos na sala
+  useEffect(() => {
+    const effect = roomState?.partyEffect;
+    if (!inRoom || !effect?.id || effect.id === lastPlayedEffectIdRef.current) return;
+    lastPlayedEffectIdRef.current = effect.id;
+    // Ignora efeitos antigos (> 10s) ao entrar na sala
+    if (effect.createdAt && Date.now() - effect.createdAt > 10000) return;
+
+    const seedBase = effect.createdAt || Date.now();
+    const particles = buildPartyEffectParticles(effect.type, seedBase);
+    const activeEntry = {
+      id: effect.id,
+      type: effect.type,
+      senderName: effect.senderName || 'Alguém',
+      particles
+    };
+    setActivePartyEffects((prev) => [...prev.slice(-3), activeEntry]);
+
+    window.setTimeout(() => {
+      setActivePartyEffects((prev) => prev.filter((item) => item.id !== effect.id));
+    }, 5200);
+  }, [inRoom, roomState?.partyEffect?.id]);
 
   useEffect(() => {
     if (!inRoom) return;
@@ -2425,57 +2973,97 @@ export default function App() {
 
         if (!currentRoom) return;
 
-        // Para convidados: corrige drift a cada 5s. Para o anfitrião: detecta se ele avançou/retrocedeu pela barra do YouTube.
+        // Para convidados: corrige drift a cada 6s. Para o anfitrião: detecta seek, travamentos e fim da música.
         if (currentRoom.playback?.videoId) {
+          const now = Date.now();
+          const playerState = typeof player.getPlayerState === 'function' ? player.getPlayerState() : -1;
+
           if (!isHostRef.current) {
-            if (Date.now() - lastGuestSyncAtRef.current >= 5000) {
-              lastGuestSyncAtRef.current = Date.now();
+            if (now - lastGuestSyncAtRef.current >= 6000) {
+              lastGuestSyncAtRef.current = now;
               syncGuestPlayerWithRoom(player, currentRoom);
             }
           } else {
-            const now = Date.now();
             lastHostVideoIdRef.current = currentRoom.playback.videoId;
-            const elapsed = currentRoom.playback.isPlaying
-              ? Math.max(0, (now - (currentRoom.playback.updatedAt || now)) / 1000)
-              : 0;
-            const expectedPos = (Number(currentRoom.playback.trackPosition) || 0) + elapsed;
-            const timeJump = Math.abs(curr - expectedPos);
 
-            // Se o anfitrião moveu a barra do YouTube (diferença > 1.2s em relação ao esperado)
-            if (timeJump > 1.2 && curr < (dur || 999999) - 0.5) {
-              lastHostTimeRef.current = curr;
-              lastHostCheckAtRef.current = now;
-              setLocalProgress(curr);
-              broadcastRoomState({
-                ...currentRoom,
-                playback: {
-                  ...currentRoom.playback,
-                  trackPosition: curr,
-                  updatedAt: now
-                }
-              });
+            // 1. Se o player já reportou ENDED (0), avança imediatamente
+            if (playerState === 0) {
+              handleSkipNextRef.current();
               return;
+            }
+
+            // 2. Detecção segura de término de faixa (mesmo se o evento ENDED atrasar ou travar nos segundos finais)
+            if (dur > 5 && curr >= dur - 0.8 && currentRoom.playback.isPlaying) {
+              handleSkipNextRef.current();
+              return;
+            }
+
+            // 3. Monitor de travamento (stall) para o Host: evita música travada ou que nunca termina
+            const tracker = hostStallTrackerRef.current;
+            if (tracker.videoId !== currentRoom.playback.videoId) {
+              hostStallTrackerRef.current = {
+                videoId: currentRoom.playback.videoId,
+                lastTime: curr,
+                lastMovedAt: now,
+                recoveryTriedAt: 0
+              };
+            } else if (currentRoom.playback.isPlaying && (playerState === 1 || playerState === 3)) {
+              if (Math.abs(curr - tracker.lastTime) >= 0.1) {
+                tracker.lastTime = curr;
+                tracker.lastMovedAt = now;
+              } else {
+                const stalledMs = now - tracker.lastMovedAt;
+                if (dur > 5 && curr >= dur - 2.5 && stalledMs > 2000) {
+                  handleSkipNextRef.current();
+                  return;
+                }
+                if (stalledMs > 12000 && now - tracker.recoveryTriedAt > 15000 && now - loadingVideoRef.current.at > 4000) {
+                  tracker.recoveryTriedAt = now;
+                  try {
+                    player.seekTo?.(curr + 0.1, true);
+                    player.playVideo?.();
+                  } catch {}
+                }
+              }
+            }
+
+            // 4. Se o anfitrião moveu a barra do YouTube (somente quando realmente tocando e não durante carregamento/buffering)
+            const isRecentlyLoaded = now - loadingVideoRef.current.at < 2500;
+            if (playerState === 1 && !isRecentlyLoaded) {
+              const elapsed = currentRoom.playback.isPlaying
+                ? Math.max(0, (now - (currentRoom.playback.updatedAt || now)) / 1000)
+                : 0;
+              const expectedPos = (Number(currentRoom.playback.trackPosition) || 0) + elapsed;
+              const timeJump = Math.abs(curr - expectedPos);
+
+              if (timeJump > 1.8 && curr < (dur || 999999) - 1.0) {
+                lastHostTimeRef.current = curr;
+                lastHostCheckAtRef.current = now;
+                setLocalProgress(curr);
+                broadcastRoomState({
+                  ...currentRoom,
+                  playback: {
+                    ...currentRoom.playback,
+                    trackPosition: curr,
+                    updatedAt: now,
+                    lastSeekAt: now
+                  }
+                });
+                return;
+              }
             }
           }
         }
 
-        // Detecção segura de término de faixa para o Host (garante que avança mesmo se o evento do YouTube atrasar)
-        if (
-          isHostRef.current &&
-          dur > 5 &&
-          curr >= dur - 0.5 &&
-          currentRoom.playback.isPlaying
-        ) {
-          handleSkipNextRef.current();
-          return;
-        }
-
         const currentWholeSec = Math.floor(curr);
+        const hostPlayerState = typeof player.getPlayerState === 'function' ? player.getPlayerState() : -1;
         if (
           isHostRef.current &&
           currentRoom.playback.isPlaying &&
+          hostPlayerState === 1 &&
+          Date.now() - loadingVideoRef.current.at > 2500 &&
           currentWholeSec > 0 &&
-          currentWholeSec % 5 === 0 &&
+          currentWholeSec % 6 === 0 &&
           currentWholeSec !== lastHeartbeatSecond
         ) {
           lastHeartbeatSecond = currentWholeSec;
@@ -2940,15 +3528,23 @@ export default function App() {
     const playback = currentRoom?.playback;
     if (!playback?.videoId || isResyncingPlayer) return;
 
-    const targetPosition = Math.max(
-      0,
-      (Number(playback.trackPosition) || 0) + (playback.isPlaying ? Math.max(0, Date.now() - (playback.updatedAt || Date.now())) / 1000 : 0)
-    );
+    const now = Date.now();
     const player = playerRef.current;
+    const hostCurrentTime =
+      isHostRef.current && player && typeof player.getCurrentTime === 'function'
+        ? player.getCurrentTime()
+        : null;
+    const targetPosition =
+      isHostRef.current && Number.isFinite(hostCurrentTime) && hostCurrentTime >= 0
+        ? hostCurrentTime
+        : computePlaybackTargetPosition(playback);
+
     setIsResyncingPlayer(true);
 
     try {
       if (player?.loadVideoById && player?.cueVideoById) {
+        loadingVideoRef.current = { videoId: playback.videoId, at: now };
+        lastGuestAutoSeekAtRef.current = now;
         const loadMethod = playback.isPlaying ? player.loadVideoById : player.cueVideoById;
         loadMethod.call(player, { videoId: playback.videoId, startSeconds: targetPosition });
         if (playback.isPlaying) player.playVideo?.();
@@ -2963,13 +3559,43 @@ export default function App() {
       if (!isHostRef.current) setAudioUnlocked(true);
     }
 
+    // Quando o administrador clica em "Sincronizar Player", propaga imediatamente para TODOS na sala
+    if (isHostRef.current) {
+      lastHostTimeRef.current = targetPosition;
+      lastHostCheckAtRef.current = now;
+      hostStallTrackerRef.current = {
+        videoId: playback.videoId,
+        lastTime: targetPosition,
+        lastMovedAt: now,
+        recoveryTriedAt: 0
+      };
+      lastHandledSyncNonceRef.current = now;
+      broadcastRoomState({
+        ...currentRoom,
+        playback: {
+          ...playback,
+          trackPosition: targetPosition,
+          updatedAt: now,
+          lastSeekAt: now,
+          syncNonce: now,
+          syncTriggeredBy: usernameRef.current || 'Anfitrião'
+        }
+      });
+      setSyncStatusMsg('Sincronizado para todos!');
+    } else {
+      setSyncStatusMsg('Player sincronizado!');
+    }
+
     window.setTimeout(() => {
       setIsResyncingPlayer(false);
       if (manualSyncPendingRef.current && playerRef.current && roomStateRef.current?.playback?.videoId) {
         manualSyncPendingRef.current = false;
-        syncGuestPlayerWithRoom(playerRef.current, roomStateRef.current);
+        syncGuestPlayerWithRoom(playerRef.current, roomStateRef.current, { force: true });
       }
     }, 1200);
+    window.setTimeout(() => {
+      setSyncStatusMsg('');
+    }, 2600);
   };
 
   // Controles do Anfitrião: Avançar para a próxima música da fila
@@ -2977,11 +3603,20 @@ export default function App() {
     const currentRoom = ensureRoomPlaylist(roomStateRef.current);
     if (!isHostRef.current || !currentRoom) return;
     const finishedTrackId = currentRoom.playback?.playlistItemId || currentRoom.playback?.videoId;
-    if (finishedTrackId && lastAdvancedTrackRef.current === finishedTrackId) return;
-    if (finishedTrackId) lastAdvancedTrackRef.current = finishedTrackId;
+    const now = Date.now();
+    if (
+      finishedTrackId &&
+      lastAdvancedTrackRef.current?.id === finishedTrackId &&
+      now - lastAdvancedTrackRef.current.at < 2500
+    ) {
+      return;
+    }
+    if (finishedTrackId) lastAdvancedTrackRef.current = { id: finishedTrackId, at: now };
 
     // Se a fila estiver vazia, apenas encerra a reprodução
     if (!currentRoom.queue || currentRoom.queue.length === 0) {
+      loadingVideoRef.current = { videoId: null, at: now };
+      hostStallTrackerRef.current = { videoId: null, lastTime: -1, lastMovedAt: now, recoveryTriedAt: 0 };
       broadcastRoomState({
         ...currentRoom,
         playlist: (currentRoom.playlist || []).map((item) =>
@@ -2996,7 +3631,7 @@ export default function App() {
           playlistItemId: null,
           isPlaying: false,
           trackPosition: 0,
-          updatedAt: Date.now(),
+          updatedAt: now,
           skipVoters: [],
           skipTimerEndsAt: null
         }
@@ -3009,8 +3644,13 @@ export default function App() {
     const nextTrack = sortedQueue[0];
     const remainingQueue = sortedQueue.slice(1);
 
+    loadingVideoRef.current = { videoId: nextTrack.videoId, at: now };
+    lastHostTimeRef.current = 0;
+    lastHostCheckAtRef.current = now;
+    hostStallTrackerRef.current = { videoId: nextTrack.videoId, lastTime: -1, lastMovedAt: now, recoveryTriedAt: 0 };
+
     if (playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
-      playerRef.current.loadVideoById(nextTrack.videoId);
+      playerRef.current.loadVideoById({ videoId: nextTrack.videoId, startSeconds: 0 });
     }
 
     broadcastRoomState({
@@ -3026,15 +3666,17 @@ export default function App() {
         artist: nextTrack.artist,
         thumbnail: nextTrack.thumbnail,
         addedBy: nextTrack.addedBy,
+        addedById: nextTrack.addedById,
         playlistItemId: nextTrack.id,
         isPlaying: true,
         trackPosition: 0,
-        updatedAt: Date.now(),
+        updatedAt: now,
         skipVoters: [],
         skipTimerEndsAt: null
       },
       queue: remainingQueue
     });
+    setLocalProgress(0);
     setSkipCountdownSeconds(0);
   };
   handleSkipNextRef.current = handleSkipNext;
@@ -3056,14 +3698,20 @@ export default function App() {
     if (alreadyQueuedOrPlaying) return;
 
     if (isHostRef.current) {
+      const nextScores = incrementPartyScore(currentRoom, userId, PARTY_SCORE_POINTS.ADD_TRACK, 'tracks');
       if (!currentRoom.playback.videoId) {
+        const now = Date.now();
         const playlistItem = { ...createPlaylistItem(track, username, 'playing'), addedById: userId, voters: [] };
+        lastAdvancedTrackRef.current = null;
+        loadingVideoRef.current = { videoId: track.videoId, at: now };
+        hostStallTrackerRef.current = { videoId: track.videoId, lastTime: -1, lastMovedAt: now, recoveryTriedAt: 0 };
         if (playerRef.current && typeof playerRef.current.loadVideoById === 'function') {
-          playerRef.current.loadVideoById(track.videoId);
+          playerRef.current.loadVideoById({ videoId: track.videoId, startSeconds: 0 });
         }
 
         broadcastRoomState({
           ...currentRoom,
+          partyScores: nextScores,
           playlist: [...(currentRoom.playlist || []), playlistItem],
           playback: {
             videoId: track.videoId,
@@ -3071,10 +3719,11 @@ export default function App() {
             artist: track.artist,
             thumbnail: track.thumbnail,
             addedBy: username,
+            addedById: userId,
             playlistItemId: playlistItem.id,
             isPlaying: true,
             trackPosition: 0,
-            updatedAt: Date.now(),
+            updatedAt: now,
             skipVoters: [],
             skipTimerEndsAt: null
           }
@@ -3088,6 +3737,7 @@ export default function App() {
 
       broadcastRoomState({
         ...currentRoom,
+        partyScores: nextScores,
         queue: [...(currentRoom.queue || []), newQueueItem],
         playlist: [...(currentRoom.playlist || []), newQueueItem]
       });
@@ -3202,7 +3852,10 @@ export default function App() {
 
       broadcastRoomState({
         ...currentRoom,
-        queue: updatedQueue
+        queue: updatedQueue,
+        partyScores: !hasVoted
+          ? incrementPartyScore(currentRoom, userId, PARTY_SCORE_POINTS.VOTE_TRACK, 'votes')
+          : currentRoom.partyScores
       });
     } else {
       if (syncServiceRef.current) {
@@ -3343,6 +3996,61 @@ export default function App() {
     });
   };
 
+  const handleAppendEmojiToChat = (emoji) => {
+    setChatInput((prev) => {
+      const next = `${prev}${emoji}`;
+      return next.length <= MAX_CHAT_CHARACTERS ? next : prev;
+    });
+    requestAnimationFrame(() => {
+      chatInputRef.current?.focus();
+    });
+  };
+
+  const handleEditChatMessage = useCallback((messageId, newText) => {
+    const cleanText = String(newText || '').trim().slice(0, MAX_CHAT_CHARACTERS);
+    if (!messageId || !cleanText) return;
+    const action = {
+      type: 'EDIT_CHAT_MESSAGE',
+      messageId,
+      senderId: userId,
+      text: cleanText
+    };
+    if (isHostRef.current) handleHostProcessGuestAction(action);
+    else syncServiceRef.current?.sendAction(action);
+  }, [userId]);
+
+  const handleDeleteChatMessage = useCallback((messageId) => {
+    if (!messageId) return;
+    const action = {
+      type: 'DELETE_CHAT_MESSAGE',
+      messageId,
+      senderId: userId
+    };
+    if (isHostRef.current) handleHostProcessGuestAction(action);
+    else syncServiceRef.current?.sendAction(action);
+  }, [userId]);
+
+  const handleTriggerPartyEffect = (effectType) => {
+    const now = Date.now();
+    if (now - lastEffectTriggeredAtRef.current < 2500) return;
+    lastEffectTriggeredAtRef.current = now;
+    setEffectCooldown(true);
+    window.setTimeout(() => setEffectCooldown(false), 2500);
+
+    const action = {
+      type: 'TRIGGER_PARTY_EFFECT',
+      effectType,
+      effectId: `fx_${now}_${Math.random().toString(36).slice(2, 7)}`,
+      senderId: userId,
+      senderName: username.trim() || 'Convidado'
+    };
+    if (isHostRef.current) {
+      handleHostProcessGuestAction(action);
+    } else {
+      syncServiceRef.current?.sendAction(action);
+    }
+  };
+
   const handleSendGif = async (selectedGif = null) => {
     if (isSendingGif) return;
     setIsSendingGif(true);
@@ -3439,6 +4147,10 @@ export default function App() {
     setTranslationData({ loading: false, synced: [], plain: '', error: null, targetLang: 'pt' });
     setChatInput('');
     setUnreadChatCount(0);
+    setActivePartyEffects([]);
+    setSyncStatusMsg('');
+    lastHandledSyncNonceRef.current = 0;
+    lastPlayedEffectIdRef.current = null;
     joinedRoomConfirmedRef.current = false;
     setRoomBrokerIndex(null);
     if (playerRef.current) {
@@ -3489,15 +4201,19 @@ export default function App() {
   const handleSeekToLyric = (timeInSeconds) => {
     const currentRoom = roomStateRef.current;
     if (!isHostRef.current || !playerRef.current || typeof playerRef.current.seekTo !== 'function' || !currentRoom) return;
+    const now = Date.now();
     playerRef.current.seekTo(timeInSeconds, true);
     setLocalProgress(timeInSeconds);
+    lastHostTimeRef.current = timeInSeconds;
+    lastHostCheckAtRef.current = now;
 
     broadcastRoomState({
       ...currentRoom,
       playback: {
         ...currentRoom.playback,
         trackPosition: timeInSeconds,
-        updatedAt: Date.now()
+        updatedAt: now,
+        lastSeekAt: now
       }
     });
   };
@@ -3506,6 +4222,7 @@ export default function App() {
   // Avançar ou retroceder a música utilizando a barra de progresso (Anfitrião)
   const handleProgressBarSeek = (e) => {
     if (!isHostRef.current || !playerRef.current || !duration || !roomStateRef.current?.playback?.videoId) return;
+    const now = Date.now();
     const rect = e.currentTarget.getBoundingClientRect();
     const clickX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
     const targetSeconds = (clickX / rect.width) * duration;
@@ -3515,7 +4232,7 @@ export default function App() {
     }
     setLocalProgress(targetSeconds);
     lastHostTimeRef.current = targetSeconds;
-    lastHostCheckAtRef.current = Date.now();
+    lastHostCheckAtRef.current = now;
 
     const currentRoom = roomStateRef.current;
     broadcastRoomState({
@@ -3523,7 +4240,8 @@ export default function App() {
       playback: {
         ...currentRoom.playback,
         trackPosition: targetSeconds,
-        updatedAt: Date.now()
+        updatedAt: now,
+        lastSeekAt: now
       }
     });
   };
@@ -3692,6 +4410,7 @@ export default function App() {
     ...(roomState.queue || []).map((item) => ({ ...item, status: 'queued' })),
     ...(roomState.playlist || []).filter((item) => item.status === 'played')
   ] : [];
+  const partyKing = roomState ? getPartyKing(roomState) : null;
   const isTrackActive = (videoId) => roomState?.playback?.videoId === videoId || (roomState?.playlist || []).some((item) =>
     item.videoId === videoId && ['queued', 'playing'].includes(item.status)
   );
@@ -4131,6 +4850,9 @@ export default function App() {
   // ============================================================================
   return (
     <div className="min-h-screen lg:h-screen lg:max-h-screen bg-zinc-950 text-white flex flex-col relative overflow-x-hidden lg:overflow-hidden">
+      {/* Animações de Festa Sincronizadas (Balões, Fogos, Confetes e Itens) */}
+      <PartyEffectsOverlay effects={activePartyEffects} />
+
       {/* Capa do álbum desfocada; troca com crossfade quando a faixa muda. */}
       <AlbumBackdrop src={roomState.playback.thumbnail} theme={theme} />
 
@@ -4174,10 +4896,22 @@ export default function App() {
                 PIN: {roomState.pinCode}
               </span>
             </div>
-            <p className="text-xs text-zinc-400 flex items-center flex-wrap gap-1">
+            <p className="text-xs text-zinc-400 flex items-center flex-wrap gap-1.5">
               <span>Anfitrião: <strong className="text-zinc-200">{roomState.hostName}</strong></span>
               <span>•</span>
               <span>{(roomState.members || []).length} na festa</span>
+              {partyKing && (
+                <>
+                  <span>•</span>
+                  <span
+                    className="inline-flex items-center gap-1 rounded-full border border-amber-500/50 bg-amber-500/15 px-2 py-0.5 text-[11px] font-bold text-amber-400"
+                    title="Usuário que mais interagiu no chat, adicionou músicas, votou e animou a festa"
+                  >
+                    <Crown className="h-3 w-3 text-amber-400" />
+                    Rei da Festa: {partyKing.name} ({partyKing.score} pts)
+                  </span>
+                </>
+              )}
             </p>
             {roomState.roomDescription && (
               <p className="text-[11px] font-medium text-amber-600 dark:text-amber-300/90 mt-0.5 line-clamp-2 max-w-md" title={roomState.roomDescription}>
@@ -4535,16 +5269,49 @@ export default function App() {
                 />
               </div>
 
-              <button
-                type="button"
-                onClick={handleResyncPlayer}
-                disabled={!roomState.playback.videoId || isResyncingPlayer}
-                title="Recarregar a música atual e sincronizar este player com a sala"
-                className="flex items-center gap-1.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white hover:bg-zinc-50 dark:bg-zinc-950/80 dark:hover:bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-700 dark:text-zinc-300 transition hover:border-red-500/60 hover:text-red-500 dark:hover:text-white disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer shadow-sm shrink-0"
-              >
-                <RefreshCw className={`h-3.5 w-3.5 ${isResyncingPlayer ? 'animate-spin text-red-400' : ''}`} />
-                {isResyncingPlayer ? 'Sincronizando...' : 'Sincronizar player'}
-              </button>
+              <div className="flex items-center gap-2">
+                {syncStatusMsg && (
+                  <span className="text-[11px] font-semibold text-emerald-400">
+                    {syncStatusMsg}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={handleResyncPlayer}
+                  disabled={!roomState.playback.videoId || isResyncingPlayer}
+                  title={
+                    isHost
+                      ? 'Recarregar a música atual e sincronizar o player para você e todos os participantes da sala'
+                      : 'Recarregar a música atual e sincronizar este player com a sala'
+                  }
+                  className="flex items-center gap-1.5 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white hover:bg-zinc-50 dark:bg-zinc-950/80 dark:hover:bg-zinc-900 px-3 py-2 text-xs font-semibold text-zinc-700 dark:text-zinc-300 transition hover:border-red-500/60 hover:text-red-500 dark:hover:text-white disabled:cursor-not-allowed disabled:opacity-40 cursor-pointer shadow-sm shrink-0"
+                >
+                  <RefreshCw className={`h-3.5 w-3.5 ${isResyncingPlayer ? 'animate-spin text-red-400' : ''}`} />
+                  {isResyncingPlayer ? 'Sincronizando...' : 'Sincronizar player'}
+                </button>
+              </div>
+            </div>
+
+            {/* Barra de Animações de Festa (Balões, Fogos, Confetes e Itens) */}
+            <div className="w-full mt-3 pt-2.5 border-t border-zinc-800/70 flex flex-wrap items-center justify-between gap-1.5">
+              <span className="text-[11px] font-semibold text-zinc-400 flex items-center gap-1">
+                <Sparkles className="w-3.5 h-3.5 text-amber-400" /> Animar festa:
+              </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {PARTY_EFFECT_TYPES.map((effect) => (
+                  <button
+                    key={effect.id}
+                    type="button"
+                    disabled={effectCooldown}
+                    onClick={() => handleTriggerPartyEffect(effect.id)}
+                    title={`Soltar ${effect.label.toLowerCase()} na tela de todos os participantes`}
+                    className="flex items-center gap-1 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white hover:bg-zinc-50 dark:bg-zinc-950/80 dark:hover:bg-zinc-800 px-2.5 py-1 text-[11px] font-semibold text-zinc-700 dark:text-zinc-200 transition hover:border-amber-500/60 disabled:opacity-45 disabled:cursor-not-allowed cursor-pointer shadow-sm"
+                  >
+                    <span className="text-sm leading-none">{effect.emoji}</span>
+                    <span className="hidden sm:inline">{effect.label}</span>
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -4561,13 +5328,17 @@ export default function App() {
             <div className="flex-1 min-h-0 overflow-y-auto py-1 flex flex-col gap-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               {(roomState.members || []).map((m) => {
                 const isSelf = m.id === userId;
+                const isKing = Boolean(partyKing && partyKing.id === m.id);
+                const memberScore = Number(roomState.partyScores?.[m.id]?.score) || 0;
                 return (
                   <div
                     key={m.id}
                     className={`party-member-card group relative w-full px-3 py-2 rounded-2xl text-xs sm:text-sm border flex items-center justify-between gap-2.5 shadow-sm transition-colors bg-white dark:bg-zinc-950 ${
-                      isSelf
-                        ? 'party-member-card-self border-red-500/60 text-red-600 dark:text-red-200'
-                        : 'border-zinc-200 dark:border-zinc-800 text-zinc-800 dark:text-zinc-200'
+                      isKing
+                        ? 'border-amber-500/80 ring-1 ring-amber-400/40 text-zinc-800 dark:text-amber-100'
+                        : isSelf
+                          ? 'party-member-card-self border-red-500/60 text-red-600 dark:text-red-200'
+                          : 'border-zinc-200 dark:border-zinc-800 text-zinc-800 dark:text-zinc-200'
                     }`}
                   >
                     <div className="flex items-center gap-2.5 min-w-0 flex-1">
@@ -4576,7 +5347,9 @@ export default function App() {
                         <img
                           src={m.avatar || getRandomCuteAvatar(m.name)}
                           alt={m.name}
-                          className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-zinc-800 object-cover border-2 border-red-500/40 shadow-sm"
+                          className={`w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-zinc-800 object-cover border-2 shadow-sm ${
+                            isKing ? 'border-amber-400' : 'border-red-500/40'
+                          }`}
                         />
                         <span
                           className="absolute -bottom-0.5 -right-0.5 w-3 h-3 rounded-full bg-emerald-500 ring-2 ring-white dark:ring-zinc-950 border border-emerald-300"
@@ -4585,19 +5358,34 @@ export default function App() {
                       </div>
 
                       <div className="flex flex-col min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5 leading-tight min-w-0">
+                        <div className="flex items-center gap-1.5 leading-tight min-w-0 flex-wrap">
                           <span className="font-semibold truncate">
                             {m.name}
                           </span>
                           {m.isHost && (
                             <Crown className="w-3.5 h-3.5 text-amber-500 shrink-0" title="Anfitrião da Party" />
                           )}
+                          {isKing && (
+                            <span
+                              className="inline-flex items-center gap-0.5 rounded-full border border-amber-500/50 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-extrabold text-amber-500 dark:text-amber-300 shrink-0"
+                              title="Rei da Festa: quem mais interagiu na party!"
+                            >
+                              👑 Rei da Festa
+                            </span>
+                          )}
                         </div>
-                        {isSelf && (
-                          <span className="text-[10px] font-bold text-red-500 dark:text-red-400 leading-none mt-0.5">
-                            (Você)
-                          </span>
-                        )}
+                        <div className="flex items-center gap-2 mt-0.5">
+                          {isSelf && (
+                            <span className="text-[10px] font-bold text-red-500 dark:text-red-400 leading-none">
+                              (Você)
+                            </span>
+                          )}
+                          {memberScore > 0 && (
+                            <span className="text-[10px] font-mono font-semibold text-amber-500/90 dark:text-amber-400/90 leading-none">
+                              {memberScore} pts
+                            </span>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -5281,7 +6069,16 @@ export default function App() {
                       <p>O chat da party começa por aqui.</p>
                     </div>
                   ) : (
-                    (roomState.chat || []).map((message) => <ChatMessageBubble key={message.id} message={message} />)
+                    (roomState.chat || []).map((message) => (
+                      <ChatMessageBubble
+                        key={message.id}
+                        message={message}
+                        isAuthor={message.senderId === userId && message.senderId !== 'system'}
+                        isPartyKing={Boolean(partyKing && message.senderId === partyKing.id)}
+                        onEdit={handleEditChatMessage}
+                        onDelete={handleDeleteChatMessage}
+                      />
+                    ))
                   )}
                   <div ref={chatEndRef} />
                 </div>
@@ -5308,21 +6105,29 @@ export default function App() {
               <div className="border-t border-zinc-800 pt-3">
                 <div className="mb-2 flex flex-wrap items-center gap-1.5">
                   {CHAT_REACTIONS.map((emoji) => (
-                    <button key={emoji} type="button" onClick={() => handleSendChat(emoji)} className="px-2 py-1 rounded-lg bg-zinc-950 hover:bg-zinc-800 text-base" aria-label={`Enviar ${emoji}`}>
+                    <button
+                      key={emoji}
+                      type="button"
+                      onClick={() => handleAppendEmojiToChat(emoji)}
+                      title={`Inserir ${emoji} na mensagem (clique em Enviar ou pressione Enter)`}
+                      className="px-2 py-1 rounded-lg bg-zinc-950 hover:bg-zinc-800 text-base cursor-pointer"
+                      aria-label={`Inserir ${emoji} na mensagem`}
+                    >
                       {emoji}
                     </button>
                   ))}
-                  <button type="button" onClick={() => { setShowGifInput((open) => !open); setChatError(''); }} className={`rounded-lg px-2.5 py-1.5 text-xs font-bold ${showGifInput ? 'bg-red-600 text-white' : 'bg-zinc-950 text-zinc-300 hover:bg-zinc-800'}`}>
+                  <button type="button" onClick={() => { setShowGifInput((open) => !open); setChatError(''); }} className={`rounded-lg px-2.5 py-1.5 text-xs font-bold cursor-pointer ${showGifInput ? 'bg-red-600 text-white' : 'bg-zinc-950 text-zinc-300 hover:bg-zinc-800'}`}>
                     GIF
                   </button>
                 </div>
                 {chatError && !showGifInput && <p className="mb-2 text-xs text-red-300">{chatError}</p>}
                 <form onSubmit={(event) => { event.preventDefault(); handleSendChat(); }} className="flex gap-2">
                   <input
+                    ref={chatInputRef}
                     value={chatInput}
                     onChange={(event) => setChatInput(event.target.value)}
                     maxLength={MAX_CHAT_CHARACTERS}
-                    placeholder="Escreva uma mensagem ou emoji..."
+                    placeholder="Escreva uma mensagem ou adicione emojis..."
                     className="flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-sm focus:outline-none focus:border-red-500"
                   />
                   <span className="self-center text-[10px] text-zinc-600">{chatInput.length}/{MAX_CHAT_CHARACTERS}</span>
