@@ -145,16 +145,111 @@ const PARTY_SCORE_POINTS = {
   PARTY_EFFECT: 2
 };
 
-function incrementPartyScore(room, targetUserId, points, category = 'other') {
-  if (!room || !targetUserId || targetUserId === 'system' || !points) {
-    return room?.partyScores || {};
+const PARTY_SCORE_RESET_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 horas
+
+function getRoomCoordinatorId(room) {
+  if (!room) return null;
+  const members = room.members || [];
+  if (room.hostId && members.some((member) => member.id === room.hostId)) {
+    return room.hostId;
   }
+  if (members.length === 0) return room.hostId || null;
+  const sorted = [...members].sort((a, b) => {
+    const timeDiff = (Number(a.joinedAt) || 0) - (Number(b.joinedAt) || 0);
+    if (timeDiff !== 0) return timeDiff;
+    return String(a.id || '').localeCompare(String(b.id || ''));
+  });
+  return sorted[0]?.id || room.hostId || null;
+}
+
+function getPartyScoresResetAt(room, now = Date.now()) {
+  const resetAt = Number(room?.partyScoresResetAt);
+  if (Number.isFinite(resetAt) && resetAt > 0) return resetAt;
+  const createdAt = Number(room?.createdAt);
+  if (Number.isFinite(createdAt) && createdAt > 0) return createdAt;
+  return now;
+}
+
+function isPartyScoreCycleExpired(room, now = Date.now()) {
+  if (!room) return false;
+  const resetAt = Number(room.partyScoresResetAt) || Number(room.createdAt) || 0;
+  if (!resetAt) return false;
+  return now - resetAt >= PARTY_SCORE_RESET_INTERVAL_MS;
+}
+
+function pruneExpiredPartyScores(room, now = Date.now()) {
+  if (!room) return { partyScores: {}, partyScoresResetAt: now, cycleExpired: false, wasReset: false };
   const prevScores = room.partyScores || {};
-  const current = prevScores[targetUserId] || { score: 0, messages: 0, tracks: 0, votes: 0, celebrations: 0 };
+  const hasAnyScore = Object.keys(prevScores).length > 0;
+
+  if (room.closedAt) {
+    return {
+      partyScores: {},
+      partyScoresResetAt: now,
+      cycleExpired: false,
+      wasReset: hasAnyScore
+    };
+  }
+
+  if (isPartyScoreCycleExpired(room, now)) {
+    return {
+      partyScores: {},
+      partyScoresResetAt: now,
+      cycleExpired: true,
+      wasReset: hasAnyScore
+    };
+  }
+
+  const activeMemberIds = Array.isArray(room.members)
+    ? new Set(room.members.map((member) => member?.id).filter(Boolean))
+    : null;
+
+  let changed = false;
+  const nextScores = {};
+  for (const [id, entry] of Object.entries(prevScores)) {
+    if (activeMemberIds && !activeMemberIds.has(id)) {
+      changed = true;
+      continue;
+    }
+    const startedAt = Number(entry?.startedAt) || 0;
+    if (startedAt > 0 && now - startedAt >= PARTY_SCORE_RESET_INTERVAL_MS) {
+      changed = true;
+      continue;
+    }
+    nextScores[id] = entry;
+  }
+
+  return {
+    partyScores: changed ? nextScores : prevScores,
+    partyScoresResetAt: getPartyScoresResetAt(room, now),
+    cycleExpired: false,
+    wasReset: changed
+  };
+}
+
+function getActivePartyScore(room, targetUserId, now = Date.now()) {
+  if (!room || !targetUserId || room.closedAt) return 0;
+  if (Array.isArray(room.members) && !room.members.some((member) => member?.id === targetUserId)) return 0;
+  if (isPartyScoreCycleExpired(room, now)) return 0;
+  const entry = room.partyScores?.[targetUserId];
+  if (!entry) return 0;
+  const startedAt = Number(entry.startedAt) || 0;
+  if (startedAt > 0 && now - startedAt >= PARTY_SCORE_RESET_INTERVAL_MS) return 0;
+  return Number(entry.score) || 0;
+}
+
+function incrementPartyScore(room, targetUserId, points, category = 'other') {
+  const now = Date.now();
+  const { partyScores: prevScores } = pruneExpiredPartyScores(room, now);
+  if (!room || !targetUserId || targetUserId === 'system' || !points) {
+    return prevScores;
+  }
+  const current = prevScores[targetUserId] || { score: 0, messages: 0, tracks: 0, votes: 0, celebrations: 0, startedAt: now };
   return {
     ...prevScores,
     [targetUserId]: {
       ...current,
+      startedAt: Number(current.startedAt) || now,
       score: (Number(current.score) || 0) + points,
       [category]: (Number(current[category]) || 0) + 1
     }
@@ -177,7 +272,8 @@ function resetPartyScores(partyScores = {}, userIds = []) {
 
 function getPartyRanking(room) {
   if (!room) return [];
-  const scores = room.partyScores || {};
+  const now = Date.now();
+  const { partyScores: scores } = pruneExpiredPartyScores(room, now);
   const members = room.members || [];
   return members
     .map((member) => {
@@ -1873,6 +1969,7 @@ export default function App() {
   const syncServiceRef = useRef(null);
 
   const isHost = Boolean(roomState && roomState.hostId === userId);
+  const isCoordinator = Boolean(roomState && getRoomCoordinatorId(roomState) === userId);
 
   // Refs de sincronização para garantir que callbacks e eventos nunca fiquem com closure defasada
   const roomStateRef = useRef(roomState);
@@ -1880,6 +1977,9 @@ export default function App() {
 
   const isHostRef = useRef(isHost);
   isHostRef.current = isHost;
+
+  const isCoordinatorRef = useRef(isCoordinator);
+  isCoordinatorRef.current = isCoordinator;
 
   const volumeRef = useRef(volume);
   volumeRef.current = volume;
@@ -1893,6 +1993,7 @@ export default function App() {
   const handleSkipNextRef = useRef(() => {});
   const lastAdvancedTrackRef = useRef(null);
   const lastGuestSyncAtRef = useRef(0);
+  const roomSessionIdRef = useRef(`join_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
   const lastPlayerUiUpdateRef = useRef(0);
   const manualSyncPendingRef = useRef(false);
   const lastHostVideoIdRef = useRef(null);
@@ -2035,11 +2136,15 @@ export default function App() {
     const currentRoomId = roomState.roomId;
     const sync = startRoomSync({
       roomId: currentRoomId,
-      isHost,
+      isHost: isCoordinator,
       brokerIndex: roomBrokerIndex,
       onStateUpdate: (remoteState) => {
         if (remoteState?.closedAt) {
+          try {
+            localStorage.removeItem(`party_room_${normalizeRoomCode(currentRoomId)}`);
+          } catch {}
           setInRoom(false);
+          setRoomState(null);
           setErrorMsg('A sala foi encerrada pelo anfitrião.');
           joinedRoomConfirmedRef.current = false;
           if (playerRef.current) {
@@ -2050,10 +2155,14 @@ export default function App() {
         }
         const nextRoom = ensureMemberChatColors(ensureRoomPlaylist(remoteState));
         if (
-          !isHostRef.current && joinedRoomConfirmedRef.current &&
+          !isCoordinatorRef.current && joinedRoomConfirmedRef.current &&
           !(nextRoom.members || []).some((member) => member.id === userId)
         ) {
+          try {
+            localStorage.removeItem(`party_room_${normalizeRoomCode(currentRoomId)}`);
+          } catch {}
           setInRoom(false);
+          setRoomState(null);
           setErrorMsg('Você foi removido desta party pelo anfitrião.');
           joinedRoomConfirmedRef.current = false;
           if (playerRef.current) {
@@ -2062,7 +2171,7 @@ export default function App() {
           }
           return;
         }
-        if (!isHostRef.current && (nextRoom.members || []).some((member) => member.id === userId)) {
+        if (!isCoordinatorRef.current && (nextRoom.members || []).some((member) => member.id === userId)) {
           joinedRoomConfirmedRef.current = true;
         }
         setRoomState((prev) => {
@@ -2077,7 +2186,7 @@ export default function App() {
           const remoteVersion = Number(nextRoom.stateVersion) || 0;
           // Ignora snapshots antigos que podem chegar atrasados pelo MQTT.
           if (remoteVersion < currentVersion) return prev;
-          if (isHostRef.current && remoteVersion <= currentVersion) {
+          if (isCoordinatorRef.current && remoteVersion <= currentVersion) {
             return prev;
           }
           roomRevisionRef.current = Math.max(roomRevisionRef.current, remoteVersion);
@@ -2089,9 +2198,9 @@ export default function App() {
             playbackReceivedAtRef.current = { updatedAt: nextRoom.playback.updatedAt, localTime: Date.now() };
           }
 
-          // Enquanto o convidado aguarda confirmação de entrada pelo host, preserva sua presença local otimista
+          // Enquanto o convidado aguarda confirmação de entrada pelo coordenador, preserva sua presença local otimista
           let mergedMembers = nextRoom.members || [];
-          if (!isHostRef.current && !joinedRoomConfirmedRef.current && !mergedMembers.some((m) => m.id === userId)) {
+          if (!isCoordinatorRef.current && !joinedRoomConfirmedRef.current && !mergedMembers.some((m) => m.id === userId)) {
             const localSelf = (prev.members || []).find((m) => m.id === userId);
             if (localSelf) mergedMembers = [...mergedMembers, localSelf];
           }
@@ -2111,7 +2220,7 @@ export default function App() {
         });
       },
       onAction: (action) => {
-        if (!isHostRef.current) return;
+        if (!isCoordinatorRef.current) return;
         handleHostProcessGuestAction(action);
       }
     });
@@ -2119,7 +2228,7 @@ export default function App() {
     syncServiceRef.current = sync;
     let joinRetryTimer = null;
 
-    if (isHost) {
+    if (isCoordinator) {
       joinedRoomConfirmedRef.current = true;
       sync.broadcastState(roomStateRef.current);
     } else {
@@ -2130,6 +2239,7 @@ export default function App() {
             name: usernameRef.current.trim(),
             avatar: userAvatarRef.current,
             isHost: false,
+            joinSessionId: roomSessionIdRef.current,
             lastSeen: Date.now()
           }
         });
@@ -2145,7 +2255,32 @@ export default function App() {
       sync.destroy();
       syncServiceRef.current = null;
     };
-  }, [inRoom, roomState?.roomId, isHost, roomBrokerIndex, userId]);
+  }, [inRoom, roomState?.roomId, isCoordinator, roomBrokerIndex, userId]);
+
+  const buildCoordinatorLeaveRoomState = (currentRoom, leavingUserId, leavingIsHost) => {
+    const members = currentRoom.members || [];
+    const idsToRemove = leavingIsHost ? [leavingUserId, currentRoom.hostId].filter(Boolean) : [leavingUserId];
+    const leavingMember = members.find((m) => idsToRemove.includes(m.id));
+    const updatedMembers = members.filter((m) => !idsToRemove.includes(m.id));
+    const updatedHistory = leavingMember
+      ? upsertMemberHistory(currentRoom.memberHistory || [], leavingMember)
+      : (currentRoom.memberHistory || []);
+    const shouldClear = updatedMembers.length === 0;
+
+    return {
+      ...currentRoom,
+      members: updatedMembers,
+      memberHistory: updatedHistory,
+      partyScores: shouldClear ? {} : resetPartyScores(currentRoom.partyScores, idsToRemove),
+      partyScoresResetAt: shouldClear ? Date.now() : getPartyScoresResetAt(currentRoom),
+      chat: shouldClear ? [] : currentRoom.chat,
+      queue: shouldClear ? [] : currentRoom.queue,
+      playlist: shouldClear ? [] : currentRoom.playlist,
+      playback: shouldClear
+        ? { ...INITIAL_PLAYBACK_STATE, updatedAt: Date.now() }
+        : reconcileSkipVotes(currentRoom.playback, updatedMembers)
+    };
+  };
 
   // Batimento de presença dos convidados e anfitrião
   useEffect(() => {
@@ -2153,31 +2288,55 @@ export default function App() {
     const presenceTimer = setInterval(() => {
       syncServiceRef.current?.sendAction({ type: 'USER_HEARTBEAT', userId });
     }, PRESENCE_HEARTBEAT_MS);
-    const handleLeave = () => syncServiceRef.current?.sendAction({ type: 'USER_LEFT', userId });
+    let leaveHandled = false;
+    const handleLeave = () => {
+      if (leaveHandled) return;
+      leaveHandled = true;
+      const currentRoom = roomStateRef.current;
+      if (isCoordinatorRef.current && currentRoom) {
+        const cleanId = normalizeRoomCode(currentRoom.roomId);
+        broadcastRoomState(buildCoordinatorLeaveRoomState(currentRoom, userId, isHostRef.current));
+        try {
+          localStorage.removeItem(`party_room_${cleanId}`);
+          localStorage.setItem(`party_exited_${cleanId}`, String(Date.now()));
+        } catch {}
+      } else {
+        syncServiceRef.current?.sendAction({ type: 'USER_LEFT', userId });
+      }
+    };
+    window.addEventListener('beforeunload', handleLeave);
     window.addEventListener('pagehide', handleLeave);
     return () => {
       clearInterval(presenceTimer);
+      window.removeEventListener('beforeunload', handleLeave);
       window.removeEventListener('pagehide', handleLeave);
     };
   }, [inRoom, roomState?.roomId, userId]);
 
   useEffect(() => {
-    if (!inRoom || !isHost) return;
+    if (!inRoom || !isCoordinator) return;
     const presenceSweep = setInterval(() => {
       const current = roomStateRef.current;
       if (!current) return;
-      const cutoff = Date.now() - PRESENCE_TIMEOUT_MS;
+      const now = Date.now();
+      const cutoff = now - PRESENCE_TIMEOUT_MS;
       const nextMembers = (current.members || []).filter((member) =>
         member.id === userId || (member.lastSeen || member.joinedAt || 0) >= cutoff
       );
       const removedIds = (current.members || [])
         .filter((member) => !nextMembers.some((kept) => kept.id === member.id))
         .map((member) => member.id);
-      if (nextMembers.length !== (current.members || []).length) {
+      const pruned = pruneExpiredPartyScores(current, now);
+      const membersChanged = nextMembers.length !== (current.members || []).length;
+      if (membersChanged || pruned.wasReset || pruned.cycleExpired) {
+        const nextScores = membersChanged
+          ? resetPartyScores(pruned.partyScores, removedIds)
+          : pruned.partyScores;
         broadcastRoomState({
           ...current,
           members: nextMembers,
-          partyScores: resetPartyScores(current.partyScores, removedIds),
+          partyScores: nextScores,
+          partyScoresResetAt: pruned.partyScoresResetAt,
           playback: reconcileSkipVotes(current.playback, nextMembers)
         });
       }
@@ -2185,21 +2344,42 @@ export default function App() {
     return () => {
       clearInterval(presenceSweep);
     };
-  }, [inRoom, isHost, userId]);
+  }, [inRoom, isCoordinator, userId]);
 
   const broadcastRoomState = (newState) => {
     const prevRoom = roomStateRef.current;
-    let finalState = newState;
+    const now = Date.now();
+    const pruned = pruneExpiredPartyScores(newState, now);
+    let finalState = {
+      ...newState,
+      partyScores: pruned.partyScores,
+      partyScoresResetAt: pruned.partyScoresResetAt
+    };
 
-    if (prevRoom && prevRoom.roomId === newState.roomId && !newState.closedAt) {
+    if (pruned.cycleExpired && pruned.wasReset && !newState.closedAt) {
+      const resetMessage = {
+        id: `sys_score_reset_${now}_${Math.random().toString(36).slice(2, 6)}`,
+        senderId: 'system',
+        senderName: 'Party Together',
+        type: 'text',
+        text: '⏱️ A pontuação da party foi zerada automaticamente (ciclo de 6 horas).',
+        createdAt: now
+      };
+      finalState = {
+        ...finalState,
+        chat: [...(finalState.chat || []), resetMessage].slice(-MAX_CHAT_MESSAGES)
+      };
+    }
+
+    if (prevRoom && prevRoom.roomId === finalState.roomId && !finalState.closedAt) {
       const prevKing = getPartyKing(prevRoom);
-      const nextRanking = getPartyRanking(newState);
+      const nextRanking = getPartyRanking(finalState);
       const nextKing = nextRanking[0] || null;
       if (nextKing && nextKing.id !== prevKing?.id) {
         const kingMessage = buildNewPartyKingMessage(nextKing, nextRanking);
         finalState = {
-          ...newState,
-          chat: [...(newState.chat || []), kingMessage].slice(-MAX_CHAT_MESSAGES)
+          ...finalState,
+          chat: [...(finalState.chat || []), kingMessage].slice(-MAX_CHAT_MESSAGES)
         };
       }
     }
@@ -2366,11 +2546,18 @@ export default function App() {
       const filteredMembers = members.filter((m) => !matchByNameOrId(m));
       const updatedMembers = [...filteredMembers, member];
       const updatedHistory = upsertMemberHistory(history, member);
+      const isNewJoinSession =
+        !existingMember ||
+        (action.member.joinSessionId && existingMember.joinSessionId !== action.member.joinSessionId);
+      const nextPartyScores = isNewJoinSession
+        ? resetPartyScores(currentRoom.partyScores, [action.member.id, existingMember?.id, historyProfile?.id])
+        : currentRoom.partyScores;
 
       let nextRoomState = {
         ...currentRoom,
         members: updatedMembers,
         memberHistory: updatedHistory,
+        partyScores: nextPartyScores,
         playback: reconcileSkipVotes(currentRoom.playback, updatedMembers)
       };
 
@@ -2383,14 +2570,15 @@ export default function App() {
       const members = currentRoom.members || [];
       const leavingMember = members.find((m) => m.id === action.userId);
       const updatedMembers = members.filter((m) => m.id !== action.userId);
-      if (updatedMembers.length === members.length) return;
+      const nextPartyScores = resetPartyScores(currentRoom.partyScores, action.userId);
+      if (updatedMembers.length === members.length && nextPartyScores === currentRoom.partyScores) return;
       const updatedHistory = leavingMember ? upsertMemberHistory(currentRoom.memberHistory || [], leavingMember) : (currentRoom.memberHistory || []);
 
       broadcastRoomState({
         ...currentRoom,
         members: updatedMembers,
         memberHistory: updatedHistory,
-        partyScores: resetPartyScores(currentRoom.partyScores, action.userId),
+        partyScores: nextPartyScores,
         playback: reconcileSkipVotes(currentRoom.playback, updatedMembers)
       });
     } else if (action.type === 'USER_RETURNED_CLEAR_CACHE') {
@@ -2976,7 +3164,7 @@ export default function App() {
             onStateChange: (event) => {
               // YouTube Player State 0 = ENDED
               if (event.data === window.YT.PlayerState.ENDED) {
-                if (isHostRef.current) {
+                if (isCoordinatorRef.current) {
                   handleSkipNextRef.current();
                 }
                 return;
@@ -3031,7 +3219,7 @@ export default function App() {
             },
             onError: (err) => {
               console.warn('YouTube Player onError:', err);
-              if (isHostRef.current) {
+              if (isCoordinatorRef.current) {
                 handleSkipNextRef.current();
               }
             }
@@ -3206,7 +3394,7 @@ export default function App() {
       playerRef.current.stopVideo?.();
       return;
     }
-    if (!isHostRef.current) {
+    if (!isCoordinatorRef.current) {
       syncGuestPlayerWithRoom(playerRef.current, roomState);
     }
   }, [roomState?.playback?.videoId, roomState?.playback?.isPlaying, roomState?.playback?.trackPosition, roomState?.playback?.updatedAt]);
@@ -3244,7 +3432,7 @@ export default function App() {
         const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000));
         setSkipCountdownSeconds((prev) => (prev !== remainingSec ? remainingSec : prev));
 
-        if (remainingMs <= 0 && isHostRef.current) {
+        if (remainingMs <= 0 && isCoordinatorRef.current) {
           const majority = getMajorityCount((currentRoom.members || []).length || 1);
           const votes = (currentRoom.playback.skipVoters || []).length;
           if (votes >= majority) {
@@ -3269,12 +3457,12 @@ export default function App() {
 
         if (!currentRoom) return;
 
-        // Para convidados: corrige drift a cada 6s. Para o anfitrião: detecta seek, travamentos e fim da música.
+        // Para convidados: corrige drift a cada 6s. Para o coordenador/anfitrião: detecta travamentos, fim da música e (se anfitrião) seek na barra do YouTube.
         if (currentRoom.playback?.videoId) {
           const now = Date.now();
           const playerState = typeof player.getPlayerState === 'function' ? player.getPlayerState() : -1;
 
-          if (!isHostRef.current) {
+          if (!isCoordinatorRef.current) {
             if (now - lastGuestSyncAtRef.current >= 6000) {
               lastGuestSyncAtRef.current = now;
               syncGuestPlayerWithRoom(player, currentRoom);
@@ -3294,7 +3482,7 @@ export default function App() {
               return;
             }
 
-            // 3. Monitor de travamento (stall) para o Host: evita música travada ou que nunca termina
+            // 3. Monitor de travamento (stall) para o Coordenador: evita música travada ou que nunca termina
             const tracker = hostStallTrackerRef.current;
             if (tracker.videoId !== currentRoom.playback.videoId) {
               hostStallTrackerRef.current = {
@@ -3325,7 +3513,7 @@ export default function App() {
 
             // 4. Se o anfitrião moveu a barra do YouTube (somente quando realmente tocando e não durante carregamento/buffering)
             const isRecentlyLoaded = now - loadingVideoRef.current.at < 2500;
-            if (playerState === 1 && !isRecentlyLoaded) {
+            if (isHostRef.current && playerState === 1 && !isRecentlyLoaded) {
               const elapsed = currentRoom.playback.isPlaying
                 ? Math.max(0, (now - (currentRoom.playback.updatedAt || now)) / 1000)
                 : 0;
@@ -3354,7 +3542,7 @@ export default function App() {
         const currentWholeSec = Math.floor(curr);
         const hostPlayerState = typeof player.getPlayerState === 'function' ? player.getPlayerState() : -1;
         if (
-          isHostRef.current &&
+          isCoordinatorRef.current &&
           currentRoom.playback.isPlaying &&
           hostPlayerState === 1 &&
           Date.now() - loadingVideoRef.current.at > 2500 &&
@@ -3564,6 +3752,8 @@ export default function App() {
     }
 
     const generatedRoomId = 'PT-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+    const nextJoinSessionId = `join_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    roomSessionIdRef.current = nextJoinSessionId;
 
     const newRoom = {
       roomId: generatedRoomId,
@@ -3579,6 +3769,7 @@ export default function App() {
           name: username.trim(),
           avatar: userAvatar,
           isHost: true,
+          joinSessionId: nextJoinSessionId,
           color: getAvailableChatColor([]),
           joinedAt: Date.now(),
           lastSeen: Date.now()
@@ -3597,6 +3788,9 @@ export default function App() {
       queue: [],
       playlist: [],
       chat: [],
+      partyScores: {},
+      partyScoresResetAt: Date.now(),
+      createdAt: Date.now(),
       stateVersion: 0
     };
 
@@ -3664,12 +3858,17 @@ export default function App() {
       }
 
       const foundRoom = lookupResult.state;
+      const hasOtherActiveMembers = (foundRoom.members || []).some((m) => m.id !== userId);
+      const shouldClearReturnedCache = wasPreviouslyExited && !hasOtherActiveMembers;
 
-      // Sempre que um usuário retornar a uma party da qual saiu, a lista de músicas e o chat devem estar limpos, evitando cache
+      // Se o usuário retornou a uma party vazia da qual havia saído, limpa a fila e o chat antigos;
+      // se houver outros membros ativos, mantém a festa em andamento sem interromper.
       if (wasPreviouslyExited) {
-        foundRoom.chat = [];
-        foundRoom.queue = [];
-        foundRoom.playlist = [];
+        if (shouldClearReturnedCache) {
+          foundRoom.chat = [];
+          foundRoom.queue = [];
+          foundRoom.playlist = [];
+        }
         try {
           localStorage.removeItem(`party_exited_${cleanCode}`);
           localStorage.removeItem(`party_room_${cleanCode}`);
@@ -3711,6 +3910,8 @@ export default function App() {
         }
       }
 
+      const previousHostId = foundRoom.hostId;
+
       if (isAdmin) {
         foundRoom.hostId = userId;
         foundRoom.hostName = cleanJoinName;
@@ -3739,6 +3940,9 @@ export default function App() {
         cleanJoinName
       ].filter(Boolean)));
 
+      const nextJoinSessionId = `join_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      roomSessionIdRef.current = nextJoinSessionId;
+
       const currentMemberRecord = {
         ...(previousProfile || {}),
         id: userId,
@@ -3747,6 +3951,7 @@ export default function App() {
         avatar: restoredAvatar,
         color: restoredColor,
         isHost: isAdmin,
+        joinSessionId: nextJoinSessionId,
         joinedAt: previousProfile?.joinedAt || Date.now(),
         lastSeen: Date.now()
       };
@@ -3768,14 +3973,25 @@ export default function App() {
       } catch {}
       setLastRoomInfo(lastInfo);
 
+      const now = Date.now();
+      const prunedScores = pruneExpiredPartyScores(foundRoom, now);
+      const scoreIdsToReset = [userId, previousProfile?.id];
+      if (isAdmin) {
+        scoreIdsToReset.push(previousHostId);
+      }
+      const nextPartyScores = resetPartyScores(prunedScores.partyScores, scoreIdsToReset);
+
       const updatedRoom = ensureMemberChatColors(ensureRoomPlaylist({
         ...foundRoom,
-        chat: wasPreviouslyExited ? [] : foundRoom.chat,
-        queue: wasPreviouslyExited ? [] : foundRoom.queue,
-        playlist: wasPreviouslyExited ? [] : foundRoom.playlist,
+        chat: shouldClearReturnedCache ? [] : foundRoom.chat,
+        queue: shouldClearReturnedCache ? [] : foundRoom.queue,
+        playlist: shouldClearReturnedCache ? [] : foundRoom.playlist,
+        partyScores: nextPartyScores,
+        partyScoresResetAt: prunedScores.partyScoresResetAt,
         members: updatedMembers,
         memberHistory: updatedHistory,
-        playback: reconcileSkipVotes(foundRoom.playback, updatedMembers)
+        playback: reconcileSkipVotes(foundRoom.playback, updatedMembers),
+        stateVersion: isAdmin ? (Number(foundRoom.stateVersion) || 0) + 1 : (Number(foundRoom.stateVersion) || 0)
       }));
       roomRevisionRef.current = Number(updatedRoom.stateVersion) || 0;
       joinedRoomConfirmedRef.current = isAdmin;
@@ -3903,10 +4119,10 @@ export default function App() {
     }, 2600);
   };
 
-  // Controles do Anfitrião: Avançar para a próxima música da fila
+  // Controles do Anfitrião / Coordenador: Avançar para a próxima música da fila
   const handleSkipNext = () => {
     const currentRoom = ensureRoomPlaylist(roomStateRef.current);
-    if (!isHostRef.current || !currentRoom) return;
+    if (!isCoordinatorRef.current || !currentRoom) return;
     const finishedTrackId = currentRoom.playback?.playlistItemId || currentRoom.playback?.videoId;
     const now = Date.now();
     if (
@@ -4002,7 +4218,7 @@ export default function App() {
     );
     if (alreadyQueuedOrPlaying) return;
 
-    if (isHostRef.current) {
+    if (isCoordinatorRef.current) {
       const nextScores = incrementPartyScore(currentRoom, userId, PARTY_SCORE_POINTS.ADD_TRACK, 'tracks');
       if (!currentRoom.playback.videoId) {
         const now = Date.now();
@@ -4139,7 +4355,7 @@ export default function App() {
 
   // Votar numa música da fila
   const handleVoteTrack = (itemId) => {
-    if (isHostRef.current) {
+    if (isCoordinatorRef.current) {
       const currentRoom = roomStateRef.current;
       if (!currentRoom) return;
       const target = (currentRoom.queue || []).find((item) => item.id === itemId);
@@ -4174,7 +4390,7 @@ export default function App() {
   };
 
   const handleRemoveTrack = (itemId) => {
-    if (isHostRef.current) {
+    if (isCoordinatorRef.current) {
       handleHostProcessGuestAction({ type: 'REMOVE_TRACK', itemId, senderId: userId });
     } else {
       syncServiceRef.current?.sendAction({ type: 'REMOVE_TRACK', itemId, senderId: userId });
@@ -4199,7 +4415,7 @@ export default function App() {
       senderName: username,
       options: validOptions
     };
-    if (isHostRef.current) {
+    if (isCoordinatorRef.current) {
       handleHostProcessGuestAction(action);
     } else {
       syncServiceRef.current?.sendAction(action);
@@ -4209,7 +4425,7 @@ export default function App() {
 
   const handleVoteThemePoll = (optionId) => {
     const action = { type: 'VOTE_THEME_POLL', senderId: userId, optionId };
-    if (isHostRef.current) {
+    if (isCoordinatorRef.current) {
       handleHostProcessGuestAction(action);
     } else {
       syncServiceRef.current?.sendAction(action);
@@ -4223,7 +4439,7 @@ export default function App() {
 
   const handleCloseThemePoll = () => {
     const action = { type: 'CLOSE_THEME_POLL', senderId: userId };
-    if (isHostRef.current) {
+    if (isCoordinatorRef.current) {
       handleHostProcessGuestAction(action);
     } else {
       syncServiceRef.current?.sendAction(action);
@@ -4291,7 +4507,7 @@ export default function App() {
       text: messageText,
       mentions
     };
-    if (isHostRef.current) handleHostProcessGuestAction({ type: 'CHAT_MESSAGE', message });
+    if (isCoordinatorRef.current) handleHostProcessGuestAction({ type: 'CHAT_MESSAGE', message });
     else syncServiceRef.current?.sendAction({ type: 'CHAT_MESSAGE', message });
     setChatInput('');
     setMentionQuery(null);
@@ -4365,7 +4581,7 @@ export default function App() {
       senderId: userId,
       text: cleanText
     };
-    if (isHostRef.current) handleHostProcessGuestAction(action);
+    if (isCoordinatorRef.current) handleHostProcessGuestAction(action);
     else syncServiceRef.current?.sendAction(action);
   }, [userId]);
 
@@ -4376,7 +4592,7 @@ export default function App() {
       messageId,
       senderId: userId
     };
-    if (isHostRef.current) handleHostProcessGuestAction(action);
+    if (isCoordinatorRef.current) handleHostProcessGuestAction(action);
     else syncServiceRef.current?.sendAction(action);
   }, [userId]);
 
@@ -4394,7 +4610,7 @@ export default function App() {
       senderId: userId,
       senderName: username.trim() || 'Convidado'
     };
-    if (isHostRef.current) {
+    if (isCoordinatorRef.current) {
       handleHostProcessGuestAction(action);
     } else {
       syncServiceRef.current?.sendAction(action);
@@ -4429,7 +4645,7 @@ export default function App() {
         gifKind: 'image',
         gifUrl: playableGif.url
       };
-      if (isHostRef.current) handleHostProcessGuestAction({ type: 'CHAT_MESSAGE', message });
+      if (isCoordinatorRef.current) handleHostProcessGuestAction({ type: 'CHAT_MESSAGE', message });
       else syncServiceRef.current?.sendAction({ type: 'CHAT_MESSAGE', message });
       setGifInput('');
       setGifSearchQuery('');
@@ -4471,26 +4687,18 @@ export default function App() {
       setLastRoomInfo(lastInfo);
     }
 
-    if (isHostRef.current && currentRoom) {
-      // O admin sai da sala, mas a sala permanece ativa para os membros ou para reentrar
-      const updatedMembers = (currentRoom.members || []).filter((m) => m.id !== userId);
-      const remainingNonHost = updatedMembers.filter((m) => m.id !== currentRoom.hostId);
-      const shouldClear = remainingNonHost.length === 0;
-
-      broadcastRoomState({
-        ...currentRoom,
-        members: updatedMembers,
-        partyScores: shouldClear ? {} : resetPartyScores(currentRoom.partyScores, userId),
-        chat: shouldClear ? [] : currentRoom.chat,
-        queue: shouldClear ? [] : currentRoom.queue,
-        playlist: shouldClear ? [] : currentRoom.playlist,
-        playback: shouldClear ? { ...INITIAL_PLAYBACK_STATE, updatedAt: Date.now() } : currentRoom.playback
-      });
+    if (isCoordinatorRef.current && currentRoom) {
+      // O admin (ou coordenador temporário) sai da sala, mas a sala permanece ativa para os membros ou para reentrar
+      const cleanId = normalizeRoomCode(currentRoom.roomId);
+      broadcastRoomState(buildCoordinatorLeaveRoomState(currentRoom, userId, isHostRef.current));
+      try {
+        localStorage.removeItem(`party_room_${cleanId}`);
+      } catch {}
     } else {
       syncServiceRef.current?.sendAction({ type: 'USER_LEFT', userId });
     }
 
-    syncServiceRef.current?.destroy();
+    syncServiceRef.current?.destroy({ delayDisconnectMs: 400 });
     syncServiceRef.current = null;
     setInRoom(false);
     setRoomState(null);
@@ -4523,6 +4731,8 @@ export default function App() {
         queue: [],
         playlist: [],
         members: [],
+        partyScores: {},
+        partyScoresResetAt: Date.now(),
         closedAt: Date.now(),
         playback: { ...INITIAL_PLAYBACK_STATE, updatedAt: Date.now() }
       };
@@ -4539,9 +4749,10 @@ export default function App() {
       syncServiceRef.current?.clearRetainedState?.();
     }
     syncServiceRef.current?.sendAction({ type: 'USER_LEFT', userId });
-    syncServiceRef.current?.destroy();
+    syncServiceRef.current?.destroy({ delayDisconnectMs: 400 });
     syncServiceRef.current = null;
     setInRoom(false);
+    setRoomState(null);
     joinedRoomConfirmedRef.current = false;
     setRoomBrokerIndex(null);
     if (playerRef.current) {
@@ -4602,7 +4813,7 @@ export default function App() {
   // Votação democrática para pular a música
   const handleVoteSkipTrack = () => {
     if (!roomStateRef.current?.playback?.videoId) return;
-    if (isHostRef.current) {
+    if (isCoordinatorRef.current) {
       handleHostProcessGuestAction({ type: 'VOTE_SKIP_TRACK', senderId: userId });
     } else {
       syncServiceRef.current?.sendAction({ type: 'VOTE_SKIP_TRACK', senderId: userId });
@@ -4672,7 +4883,7 @@ export default function App() {
         }
       };
 
-      if (isHostRef.current) {
+      if (isCoordinatorRef.current) {
         handleHostProcessGuestAction(action);
         handleHostProcessGuestAction(chatAction);
       } else {
@@ -4683,7 +4894,7 @@ export default function App() {
 
     if (roomChanged) {
       const finalRoomName = cleanRoomName || oldRoomName;
-      if (isHostRef.current) {
+      if (isCoordinatorRef.current) {
         const nextRoom = {
           ...roomStateRef.current,
           roomName: finalRoomName,
@@ -4764,7 +4975,7 @@ export default function App() {
     ...(roomState.playlist || []).filter((item) => item.status === 'played')
   ] : [];
   const partyKing = roomState ? getPartyKing(roomState) : null;
-  const myPartyScore = Number(roomState?.partyScores?.[userId]?.score) || 0;
+  const myPartyScore = getActivePartyScore(roomState, userId);
   const mentionCandidates = mentionQuery !== null && roomState
     ? (roomState.members || []).filter((m) =>
         m.id !== userId && String(m.name || '').toLowerCase().includes(mentionQuery.toLowerCase())
@@ -5700,7 +5911,7 @@ export default function App() {
               {(roomState.members || []).map((m) => {
                 const isSelf = m.id === userId;
                 const isKing = Boolean(partyKing && partyKing.id === m.id);
-                const memberScore = Number(roomState.partyScores?.[m.id]?.score) || 0;
+                const memberScore = getActivePartyScore(roomState, m.id);
                 return (
                   <div
                     key={m.id}
@@ -6529,7 +6740,7 @@ export default function App() {
                       </div>
                       {mentionCandidates.map((candidate, idx) => {
                         const isHighlighted = idx === Math.min(mentionHighlightIndex, mentionCandidates.length - 1);
-                        const candidateScore = Number(roomState.partyScores?.[candidate.id]?.score) || 0;
+                        const candidateScore = getActivePartyScore(roomState, candidate.id);
                         return (
                           <button
                             key={candidate.id}

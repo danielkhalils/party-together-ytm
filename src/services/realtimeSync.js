@@ -336,17 +336,30 @@ export function startRoomSync({ roomId, isHost, initialState, brokerIndex: prefe
       }
     },
 
-    destroy() {
+    destroy({ delayDisconnectMs = 0 } = {}) {
+      if (isDestroyed) return;
       isDestroyed = true;
       if (broadcastChannel) {
         try {
           broadcastChannel.close();
         } catch {}
+        broadcastChannel = null;
       }
       if (mqttClient) {
-        try {
-          mqttClient.disconnect();
-        } catch {}
+        const clientToDisconnect = mqttClient;
+        mqttClient = null;
+        const disconnectClient = () => {
+          try {
+            if (clientToDisconnect.isConnected()) {
+              clientToDisconnect.disconnect();
+            }
+          } catch {}
+        };
+        if (delayDisconnectMs > 0) {
+          setTimeout(disconnectClient, delayDisconnectMs);
+        } else {
+          disconnectClient();
+        }
       }
     }
   };
