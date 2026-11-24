@@ -161,22 +161,57 @@ function incrementPartyScore(room, targetUserId, points, category = 'other') {
   };
 }
 
-function getPartyKing(room) {
-  if (!room) return null;
-  const scores = room.partyScores || {};
-  const members = room.members || [];
-  let bestMember = null;
-  let bestScore = 0;
-
-  for (const member of members) {
-    const entry = scores[member.id];
-    const score = Number(entry?.score) || 0;
-    if (score > bestScore) {
-      bestScore = score;
-      bestMember = { ...member, score, stats: entry };
+function resetPartyScores(partyScores = {}, userIds = []) {
+  const idsToReset = Array.isArray(userIds) ? userIds.filter(Boolean) : [userIds].filter(Boolean);
+  if (!idsToReset.length || !partyScores) return partyScores || {};
+  const nextScores = { ...partyScores };
+  let changed = false;
+  for (const id of idsToReset) {
+    if (id in nextScores) {
+      delete nextScores[id];
+      changed = true;
     }
   }
-  return bestMember;
+  return changed ? nextScores : partyScores;
+}
+
+function getPartyRanking(room) {
+  if (!room) return [];
+  const scores = room.partyScores || {};
+  const members = room.members || [];
+  return members
+    .map((member) => {
+      const entry = scores[member.id];
+      const score = Number(entry?.score) || 0;
+      return { ...member, score, stats: entry };
+    })
+    .filter((member) => member.score > 0)
+    .sort((a, b) => b.score - a.score);
+}
+
+function getPartyKing(room) {
+  return getPartyRanking(room)[0] || null;
+}
+
+function buildNewPartyKingMessage(nextKing, ranking = []) {
+  const medals = ['🥇', '🥈', '🥉'];
+  const rankingLines = ranking.map((member, index) => {
+    const positionLabel = `${index + 1}º`;
+    const prefix = medals[index] ? `${medals[index]} ` : '';
+    return `${prefix}${positionLabel} ${member.name} (${member.score} pts)`;
+  });
+  const lines = [
+    `👑 ${nextKing.name} se tornou o novo Rei da Party!`,
+    ...(rankingLines.length > 0 ? ['🏆 Posição dos membros colocados:', ...rankingLines] : [])
+  ];
+  return {
+    id: `sys_king_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    senderId: 'system',
+    senderName: 'Party Together',
+    type: 'text',
+    text: lines.join('\n'),
+    createdAt: Date.now()
+  };
 }
 const CHAT_COLOR_PALETTE = [
   '#ff6b6b', '#ff9f43', '#feca57', '#1dd1a1', '#00d2d3', '#54a0ff', '#5f27cd', '#ff6bcb',
@@ -398,7 +433,9 @@ function ensureMemberChatColors(room) {
     const tenorGif = message.type === 'gif' ? normalizeTenorGifUrl(message.gifUrl || '') : null;
     const normalized = {
       type: message.type === 'gif' && tenorGif ? 'gif' : 'text',
-      text: String(message.text || '').slice(0, MAX_CHAT_CHARACTERS),
+      text: message.senderId === 'system'
+        ? String(message.text || '')
+        : String(message.text || '').slice(0, MAX_CHAT_CHARACTERS),
       gifKind: tenorGif?.kind,
       gifUrl: tenorGif?.url,
       color: colorsById.get(message.senderId) || message.color || getUserColor(message.senderId),
@@ -2133,10 +2170,14 @@ export default function App() {
       const nextMembers = (current.members || []).filter((member) =>
         member.id === userId || (member.lastSeen || member.joinedAt || 0) >= cutoff
       );
+      const removedIds = (current.members || [])
+        .filter((member) => !nextMembers.some((kept) => kept.id === member.id))
+        .map((member) => member.id);
       if (nextMembers.length !== (current.members || []).length) {
         broadcastRoomState({
           ...current,
           members: nextMembers,
+          partyScores: resetPartyScores(current.partyScores, removedIds),
           playback: reconcileSkipVotes(current.playback, nextMembers)
         });
       }
@@ -2147,13 +2188,29 @@ export default function App() {
   }, [inRoom, isHost, userId]);
 
   const broadcastRoomState = (newState) => {
+    const prevRoom = roomStateRef.current;
+    let finalState = newState;
+
+    if (prevRoom && prevRoom.roomId === newState.roomId && !newState.closedAt) {
+      const prevKing = getPartyKing(prevRoom);
+      const nextRanking = getPartyRanking(newState);
+      const nextKing = nextRanking[0] || null;
+      if (nextKing && nextKing.id !== prevKing?.id) {
+        const kingMessage = buildNewPartyKingMessage(nextKing, nextRanking);
+        finalState = {
+          ...newState,
+          chat: [...(newState.chat || []), kingMessage].slice(-MAX_CHAT_MESSAGES)
+        };
+      }
+    }
+
     const nextVersion = Math.max(
       roomRevisionRef.current,
-      Number(roomStateRef.current?.stateVersion) || 0,
-      Number(newState.stateVersion) || 0
+      Number(prevRoom?.stateVersion) || 0,
+      Number(finalState.stateVersion) || 0
     ) + 1;
     roomRevisionRef.current = nextVersion;
-    const stateWithVersion = ensureRoomPlaylist({ ...newState, stateVersion: nextVersion });
+    const stateWithVersion = ensureRoomPlaylist({ ...finalState, stateVersion: nextVersion });
     roomStateRef.current = stateWithVersion;
     setRoomState(stateWithVersion);
     if (syncServiceRef.current) {
@@ -2333,6 +2390,7 @@ export default function App() {
         ...currentRoom,
         members: updatedMembers,
         memberHistory: updatedHistory,
+        partyScores: resetPartyScores(currentRoom.partyScores, action.userId),
         playback: reconcileSkipVotes(currentRoom.playback, updatedMembers)
       });
     } else if (action.type === 'USER_RETURNED_CLEAR_CACHE') {
@@ -2463,6 +2521,7 @@ export default function App() {
         broadcastRoomState({
           ...currentRoom,
           members: nextMembers,
+          partyScores: resetPartyScores(currentRoom.partyScores, action.userId),
           playback: reconcileSkipVotes(currentRoom.playback, nextMembers)
         });
       }
@@ -4421,6 +4480,7 @@ export default function App() {
       broadcastRoomState({
         ...currentRoom,
         members: updatedMembers,
+        partyScores: shouldClear ? {} : resetPartyScores(currentRoom.partyScores, userId),
         chat: shouldClear ? [] : currentRoom.chat,
         queue: shouldClear ? [] : currentRoom.queue,
         playlist: shouldClear ? [] : currentRoom.playlist,
