@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { lookupRoomState, startRoomSync, watchRoomStatus, normalizeRoomCode } from './services/realtimeSync.js';
 import { translateSyncedLyrics, translatePlainLyrics, SUPPORTED_LANGUAGES } from './services/translateService.js';
+import { RELEASE_NOTES, LATEST_RELEASE_VERSION, NEWS_STORAGE_KEY } from './data/releaseNotes.js';
 import {
   Play,
   Pause,
@@ -235,6 +236,123 @@ function playChatMessageChime() {
       try { ctx.close(); } catch {}
     }, 400);
   } catch {}
+}
+
+function playChatMentionChime() {
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+
+    // Alerta sonoro exclusivo para marcações (@usuário): arpejo brilhante em 3 notas + brilho final
+    const notes = [
+      { freq: 880, delay: 0, duration: 0.14, type: 'triangle', peak: 0.24 },       // A5
+      { freq: 1108.73, delay: 0.09, duration: 0.16, type: 'triangle', peak: 0.26 }, // C#6
+      { freq: 1318.51, delay: 0.18, duration: 0.34, type: 'sine', peak: 0.3 },      // E6
+      { freq: 1760, delay: 0.22, duration: 0.28, type: 'sine', peak: 0.14 }         // A6 (shimmer)
+    ];
+
+    notes.forEach(({ freq, delay, duration, type, peak }) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const start = now + delay;
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, start);
+      gain.gain.setValueAtTime(0.001, start);
+      gain.gain.exponentialRampToValueAtTime(peak, start + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + duration + 0.02);
+    });
+
+    setTimeout(() => {
+      try { ctx.close(); } catch {}
+    }, 700);
+  } catch {}
+}
+
+function extractMentionsFromText(text, members = []) {
+  if (!text || !Array.isArray(members) || members.length === 0) return [];
+  const lowerText = String(text).toLowerCase();
+  const mentioned = [];
+  const seenIds = new Set();
+
+  for (const member of members) {
+    const cleanName = String(member?.name || '').trim();
+    if (!cleanName || !member?.id || seenIds.has(member.id)) continue;
+    const token = `@${cleanName.toLowerCase()}`;
+    let searchFrom = 0;
+    while (searchFrom < lowerText.length) {
+      const idx = lowerText.indexOf(token, searchFrom);
+      if (idx === -1) break;
+      const charBefore = idx === 0 ? ' ' : lowerText[idx - 1];
+      const charAfter = idx + token.length >= lowerText.length ? ' ' : lowerText[idx + token.length];
+      const validBefore = /[\s([{"'.,!?;:]/.test(charBefore);
+      const validAfter = /[\s.,!?;:)\]}"']/.test(charAfter);
+      if (validBefore && validAfter) {
+        seenIds.add(member.id);
+        mentioned.push({ id: member.id, name: cleanName });
+        break;
+      }
+      searchFrom = idx + token.length;
+    }
+  }
+  return mentioned;
+}
+
+function isMessageMentioningUser(message, targetUserId, targetUsername = '') {
+  if (!message || !targetUserId || message.senderId === targetUserId) return false;
+  if (Array.isArray(message.mentions) && message.mentions.some((m) => m.id === targetUserId)) {
+    return true;
+  }
+  const cleanName = String(targetUsername || '').trim();
+  if (!cleanName || !message.text) return false;
+  return extractMentionsFromText(message.text, [{ id: targetUserId, name: cleanName }]).length > 0;
+}
+
+function renderTextWithMentions(text, mentions = [], currentUserId = '') {
+  const source = String(text || '');
+  if (!source) return source;
+  const namesToMatch = Array.isArray(mentions)
+    ? mentions.map((m) => String(m?.name || '').trim()).filter(Boolean)
+    : [];
+  if (namesToMatch.length === 0) return source;
+
+  const escaped = namesToMatch
+    .sort((a, b) => b.length - a.length)
+    .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const regex = new RegExp(`(@(?:${escaped.join('|')}))(?=$|[\\s.,!?;:)\\]}"'])`, 'gi');
+  const parts = source.split(regex);
+  if (parts.length <= 1) return source;
+
+  const mentionsByLowerName = new Map(
+    mentions.map((m) => [String(m.name || '').trim().toLowerCase(), m.id])
+  );
+
+  return parts.map((part, idx) => {
+    if (part.startsWith('@')) {
+      const targetId = mentionsByLowerName.get(part.slice(1).toLowerCase());
+      if (targetId) {
+        const isSelfMention = targetId === currentUserId;
+        return (
+          <span
+            key={idx}
+            className={`inline-block rounded px-1 py-0.2 font-bold ${
+              isSelfMention
+                ? 'bg-amber-500/25 text-amber-200 border border-amber-400/50'
+                : 'bg-zinc-800/90 text-amber-300 border border-zinc-700/80'
+            }`}
+          >
+            {part}
+          </span>
+        );
+      }
+    }
+    return part;
+  });
 }
 
 function playPartyActiveChime() {
@@ -490,10 +608,20 @@ const PartyEffectsOverlay = React.memo(function PartyEffectsOverlay({ effects })
   );
 });
 
-const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, isAuthor, isPartyKing, onEdit, onDelete }) {
+const ChatMessageBubble = React.memo(function ChatMessageBubble({
+  message,
+  isAuthor,
+  isPartyKing,
+  currentUserId,
+  currentUsername,
+  onMentionUser,
+  onEdit,
+  onDelete
+}) {
   const [isEditing, setIsEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.text || '');
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const isMentionedForMe = isMessageMentioningUser(message, currentUserId, currentUsername);
 
   const handleStartEdit = () => {
     setEditDraft(message.text || '');
@@ -512,7 +640,13 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, isAut
   };
 
   return (
-    <div className="group rounded-xl border border-zinc-800 bg-zinc-950/80 px-3 py-2.5">
+    <div
+      className={`group rounded-xl border px-3 py-2.5 transition-colors ${
+        isMentionedForMe
+          ? 'border-amber-500/60 bg-amber-500/10 ring-1 ring-amber-400/20'
+          : 'border-zinc-800 bg-zinc-950/80'
+      }`}
+    >
       <div className="mb-1 flex items-center justify-between gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className="truncate text-xs font-bold" style={{ color: message.color }}>
@@ -526,8 +660,27 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, isAut
               <Crown className="h-2.5 w-2.5 text-amber-400" /> Rei
             </span>
           )}
+          {isMentionedForMe && (
+            <span
+              className="inline-flex shrink-0 items-center rounded-full border border-amber-400/50 bg-amber-500/20 px-1.5 py-0.5 text-[9px] font-extrabold text-amber-300"
+              title="Você foi marcado nesta mensagem"
+            >
+              @ você
+            </span>
+          )}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
+          {!isAuthor && message.senderId !== 'system' && onMentionUser && (
+            <button
+              type="button"
+              onClick={() => onMentionUser(message.senderName)}
+              title={`Marcar ${message.senderName} no chat`}
+              className="rounded px-1.5 py-0.5 text-[10px] font-bold text-zinc-400 opacity-80 transition hover:bg-zinc-800 hover:text-amber-300 sm:opacity-0 sm:group-hover:opacity-100 cursor-pointer"
+              aria-label={`Marcar ${message.senderName}`}
+            >
+              @
+            </button>
+          )}
           {isAuthor && !isEditing && (
             <div className="flex items-center gap-1 opacity-80 transition sm:opacity-0 sm:group-hover:opacity-100">
               {message.type !== 'gif' && (
@@ -628,7 +781,9 @@ const ChatMessageBubble = React.memo(function ChatMessageBubble({ message, isAut
           </button>
         </form>
       ) : (
-        <p className="break-words whitespace-pre-wrap text-sm text-zinc-200">{message.text}</p>
+        <p className="break-words whitespace-pre-wrap text-sm text-zinc-200">
+          {renderTextWithMentions(message.text, message.mentions, currentUserId)}
+        </p>
       )}
     </div>
   );
@@ -869,29 +1024,71 @@ function compressAvatarImage(file) {
   });
 }
 
-function NewsPanel({ onClose }) {
+function NewsPanel({ onClose, hasUnseenNews = false, isAutoNotification = false }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Novidades da aplicação">
-      <div className="w-full max-w-md rounded-2xl border border-zinc-700 bg-zinc-900 p-5 shadow-2xl">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="flex items-center gap-2 text-lg font-bold"><Bell className="h-5 w-5 text-amber-400" /> Novidades</h2>
-          <button onClick={onClose} className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white" aria-label="Fechar novidades"><X className="h-5 w-5" /></button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="Novidades da aplicação">
+      <div className="w-full max-w-md rounded-2xl border border-zinc-700 bg-zinc-900 p-5 text-white shadow-2xl">
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div>
+            <h2 className="flex items-center gap-2 text-lg font-bold">
+              <Bell className="h-5 w-5 text-amber-400" />
+              <span>Novidades</span>
+              {hasUnseenNews && (
+                <span className="rounded-full border border-amber-400/40 bg-amber-500/20 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-amber-300">
+                  Novo
+                </span>
+              )}
+            </h2>
+            {isAutoNotification && (
+              <p className="mt-1 text-xs text-zinc-400">
+                Temos novas atualizações disponíveis em produção! Confira o que mudou:
+              </p>
+            )}
+          </div>
+          <button onClick={onClose} className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-800 hover:text-white cursor-pointer" aria-label="Fechar novidades">
+            <X className="h-5 w-5" />
+          </button>
         </div>
-        <ul className="max-h-[65vh] overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden space-y-2.5 text-sm text-zinc-300">
-          <li>• <strong>Rei da Festa:</strong> interaja no chat, adicione músicas, vote e solte efeitos para acumular pontos e conquistar a coroa de Rei da Festa!</li>
-          <li>• <strong>Animações de Festa ao Vivo:</strong> solte balões, fogos de artifício, confetes e itens de festa sincronizados na tela de todos os participantes.</li>
-          <li>• <strong>Chat Aprimorado:</strong> agora você pode editar ou excluir seus próprios comentários, e clicar nos emojis adiciona ao campo de texto antes de enviar com Enter ou clique.</li>
-          <li>• <strong>Player Mais Estável e Sincronização Global:</strong> corrigidos bugs de repetição de trechos, travamentos e músicas que não finalizavam; quando o anfitrião clica em &ldquo;Sincronizar player&rdquo;, todos os participantes sincronizam juntos.</li>
-          <li>• <strong>Importar Playlist do YouTube / YT Music:</strong> cole o link de uma playlist na busca para extrair e adicionar até 100 músicas automaticamente uma por uma na fila da party.</li>
-          <li>• <strong>Sugestões na Busca:</strong> enquanto uma música está tocando, a aba Buscar Música sugere automaticamente faixas parecidas antes mesmo de você digitar.</li>
-          <li>• <strong>Enquete de Tema no Chat:</strong> qualquer participante pode criar uma enquete (pelo chat ou pelo botão no topo) para votar no próximo tema da party, e o anfitrião pode aplicar o tema vencedor com um clique.</li>
-          <li>• <strong>Temas e Descrição da Festa:</strong> sugestões temáticas ao criar ou editar a sala, além de uma descrição opcional visível para todos os participantes (com playlist sempre livre).</li>
-          <li>• <strong>Limpar Playlist e Chat (Anfitrião):</strong> botões exclusivos para o administrador limpar toda a lista de músicas da playlist (mantendo a faixa atual) ou limpar o histórico do chat.</li>
-          <li>• <strong>Controle de Sincronia e Tradução de Letras:</strong> botões <code>-0.5s</code> / <code>+0.5s</code> para ajustar a velocidade da letra, seletor de idioma sempre visível (Original ou traduzido) e sincronização aprimorada.</li>
-          <li>• <strong>Convite Personalizado:</strong> o botão Convidar agora copia uma mensagem pronta com nome da party, música atual, PIN e link direto.</li>
-          <li>• <strong>Layout Adaptativo e Performance:</strong> cards responsivos sem barras de rolagem visíveis, controles adaptados em telas menores e renderização muito mais leve no navegador.</li>
-          <li>• Votação democrática para pular música (timer de 30s), controle da barra de progresso pelo anfitrião, chat com emojis/GIFs do Tenor e avatares personalizados.</li>
-        </ul>
+
+        <div className="max-h-[60vh] space-y-4 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          {RELEASE_NOTES.map((release, releaseIndex) => {
+            const isLatest = releaseIndex === 0;
+            return (
+              <div
+                key={release.version}
+                className={`rounded-xl border p-3.5 ${
+                  isLatest
+                    ? 'border-amber-500/30 bg-amber-500/5'
+                    : 'border-zinc-800 bg-zinc-950/50'
+                }`}
+              >
+                <div className="mb-2.5 flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold uppercase tracking-wide text-amber-300">
+                    {release.title}
+                  </span>
+                  <span className="rounded-md bg-zinc-800 px-2 py-0.5 text-[10px] font-medium text-zinc-400">
+                    {release.date} · v{release.version}
+                  </span>
+                </div>
+                <ul className="space-y-2 text-sm text-zinc-300">
+                  {release.highlights.map((item, idx) => (
+                    <li key={idx} className="leading-relaxed">
+                      • <strong className="text-white">{item.title}:</strong> {item.description}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="mt-4 w-full rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 py-2.5 text-sm font-bold text-zinc-950 shadow-md shadow-amber-500/20 transition hover:brightness-110 cursor-pointer"
+        >
+          Entendi, fechar novidades
+        </button>
       </div>
     </div>
   );
@@ -1493,6 +1690,9 @@ export default function App() {
   // Abas: 'queue' | 'search' | 'lyrics' | 'chat'
   const [activeTab, setActiveTab] = useState('search');
   const [unreadChatCount, setUnreadChatCount] = useState(0);
+  const [unreadMentionCount, setUnreadMentionCount] = useState(0);
+  const [mentionQuery, setMentionQuery] = useState(null);
+  const [mentionHighlightIndex, setMentionHighlightIndex] = useState(0);
   const [isChatMuted, setIsChatMuted] = useState(() => {
     try {
       return localStorage.getItem('party_chat_muted') === 'true';
@@ -1509,7 +1709,37 @@ export default function App() {
   const [chatError, setChatError] = useState('');
   const [showGifInput, setShowGifInput] = useState(false);
   const [showNews, setShowNews] = useState(false);
+  const [isAutoNewsOpen, setIsAutoNewsOpen] = useState(false);
+  const [seenNewsVersion, setSeenNewsVersion] = useState(() => {
+    try {
+      return localStorage.getItem(NEWS_STORAGE_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+  const hasUnseenNews = Boolean(LATEST_RELEASE_VERSION) && seenNewsVersion !== LATEST_RELEASE_VERSION;
+  const openNewsPanel = useCallback(() => {
+    setIsAutoNewsOpen(false);
+    setShowNews(true);
+  }, []);
+  const closeNewsPanel = useCallback(() => {
+    setShowNews(false);
+    setIsAutoNewsOpen(false);
+    if (LATEST_RELEASE_VERSION) {
+      setSeenNewsVersion(LATEST_RELEASE_VERSION);
+      try {
+        localStorage.setItem(NEWS_STORAGE_KEY, LATEST_RELEASE_VERSION);
+      } catch {}
+    }
+  }, []);
   const [showInstallHelp, setShowInstallHelp] = useState(false);
+
+  // Exibe automaticamente a notificação de novidades ao logar na party após um novo deploy
+  useEffect(() => {
+    if (!inRoom || !hasUnseenNews) return;
+    setIsAutoNewsOpen(true);
+    setShowNews(true);
+  }, [inRoom, hasUnseenNews]);
   const closeTenorGifModal = useCallback(() => setShowGifInput(false), []);
   const chatMessagesContainerRef = useRef(null);
   const chatEndRef = useRef(null);
@@ -2244,12 +2474,14 @@ export default function App() {
       const text = String(message.text || '').trim().slice(0, MAX_CHAT_CHARACTERS);
       if ((isGif && tenorGif?.kind !== 'image') || (!isGif && !text)) return;
       const sender = (currentRoom.members || []).find((member) => member.id === message.senderId);
+      const mentions = isGif ? [] : extractMentionsFromText(text, currentRoom.members || []);
       const messages = [...(currentRoom.chat || []), {
         id: message.id || `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         senderId: message.senderId,
         senderName: String(sender?.name || message.senderName || 'Convidado').slice(0, 32),
         type: isGif ? 'gif' : 'text',
         text,
+        mentions,
         gifKind: tenorGif?.kind,
         gifUrl: tenorGif?.url,
         color: sender?.color || getUserColor(message.senderId),
@@ -2272,7 +2504,12 @@ export default function App() {
         if (msg.senderId !== action.senderId || msg.type === 'gif') return msg;
         if (msg.text === cleanText) return msg;
         changed = true;
-        return { ...msg, text: cleanText, editedAt: Date.now() };
+        return {
+          ...msg,
+          text: cleanText,
+          mentions: extractMentionsFromText(cleanText, currentRoom.members || []),
+          editedAt: Date.now()
+        };
       });
       if (changed) {
         broadcastRoomState({ ...currentRoom, chat: updatedChat });
@@ -3233,20 +3470,29 @@ export default function App() {
 
       // Se a mensagem veio de outro usuário
       if (latestMsg.senderId !== userId) {
+        const isMentioned = isMessageMentioningUser(latestMsg, userId, username);
         if (!isChatMuted) {
-          playChatMessageChime();
+          if (isMentioned) {
+            playChatMentionChime();
+          } else {
+            playChatMessageChime();
+          }
         }
         if (activeTab !== 'chat') {
           setUnreadChatCount((count) => count + 1);
+          if (isMentioned) {
+            setUnreadMentionCount((count) => count + 1);
+          }
         }
       }
     }
-  }, [roomState?.chat, activeTab, userId, isChatMuted]);
+  }, [roomState?.chat, activeTab, userId, username, isChatMuted]);
 
   // Zera o selo de mensagens não lidas ao entrar na aba chat
   useEffect(() => {
     if (activeTab === 'chat') {
       setUnreadChatCount(0);
+      setUnreadMentionCount(0);
     }
   }, [activeTab]);
 
@@ -3978,15 +4224,18 @@ export default function App() {
     if (!messageText) return;
     const currentRoom = roomStateRef.current;
     if (!currentRoom) return;
+    const mentions = extractMentionsFromText(messageText, currentRoom.members || []);
     const message = {
       id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       senderId: userId,
       senderName: username.trim(),
-      text: messageText
+      text: messageText,
+      mentions
     };
     if (isHostRef.current) handleHostProcessGuestAction({ type: 'CHAT_MESSAGE', message });
     else syncServiceRef.current?.sendAction({ type: 'CHAT_MESSAGE', message });
     setChatInput('');
+    setMentionQuery(null);
     setChatError('');
     isChatAtBottomRef.current = true;
     setIsChatAtBottom(true);
@@ -4005,6 +4254,48 @@ export default function App() {
       chatInputRef.current?.focus();
     });
   };
+
+  const handleChatInputChange = (value) => {
+    setChatInput(value);
+    const match = value.match(/(?:^|\s)@([^\s@]{0,24})$/);
+    if (match) {
+      setMentionQuery(match[1]);
+      setMentionHighlightIndex(0);
+    } else {
+      setMentionQuery(null);
+    }
+  };
+
+  const handleSelectMentionCandidate = (memberName) => {
+    const cleanName = String(memberName || '').trim();
+    if (!cleanName) return;
+    setChatInput((prev) => {
+      const replaced = prev.replace(/(^|\s)@[^\s@]{0,24}$/, `$1@${cleanName} `);
+      return replaced.slice(0, MAX_CHAT_CHARACTERS);
+    });
+    setMentionQuery(null);
+    setMentionHighlightIndex(0);
+    requestAnimationFrame(() => {
+      chatInputRef.current?.focus();
+    });
+  };
+
+  const handleMentionUserInChat = useCallback((memberName) => {
+    const cleanName = String(memberName || '').trim();
+    if (!cleanName) return;
+    setActiveTab('chat');
+    setChatInput((prev) => {
+      const mentionToken = `@${cleanName} `;
+      if (prev.toLowerCase().includes(`@${cleanName.toLowerCase()}`)) return prev;
+      const prefix = prev && !/\s$/.test(prev) ? `${prev} ` : prev;
+      const next = `${prefix}${mentionToken}`;
+      return next.length <= MAX_CHAT_CHARACTERS ? next : prev;
+    });
+    setMentionQuery(null);
+    requestAnimationFrame(() => {
+      chatInputRef.current?.focus();
+    });
+  }, []);
 
   const handleEditChatMessage = useCallback((messageId, newText) => {
     const cleanText = String(newText || '').trim().slice(0, MAX_CHAT_CHARACTERS);
@@ -4147,6 +4438,8 @@ export default function App() {
     setTranslationData({ loading: false, synced: [], plain: '', error: null, targetLang: 'pt' });
     setChatInput('');
     setUnreadChatCount(0);
+    setUnreadMentionCount(0);
+    setMentionQuery(null);
     setActivePartyEffects([]);
     setSyncStatusMsg('');
     lastHandledSyncNonceRef.current = 0;
@@ -4411,6 +4704,12 @@ export default function App() {
     ...(roomState.playlist || []).filter((item) => item.status === 'played')
   ] : [];
   const partyKing = roomState ? getPartyKing(roomState) : null;
+  const myPartyScore = Number(roomState?.partyScores?.[userId]?.score) || 0;
+  const mentionCandidates = mentionQuery !== null && roomState
+    ? (roomState.members || []).filter((m) =>
+        m.id !== userId && String(m.name || '').toLowerCase().includes(mentionQuery.toLowerCase())
+      )
+    : [];
   const isTrackActive = (videoId) => roomState?.playback?.videoId === videoId || (roomState?.playlist || []).some((item) =>
     item.videoId === videoId && ['queued', 'playing'].includes(item.status)
   );
@@ -4817,10 +5116,13 @@ export default function App() {
           <div className="mt-3 flex gap-2">
             <button
               type="button"
-              onClick={() => setShowNews(true)}
-              className="flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2.5 text-xs font-semibold transition cursor-pointer bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-amber-500 dark:text-amber-300 border border-zinc-200 dark:border-transparent shadow-sm"
+              onClick={openNewsPanel}
+              className="relative flex shrink-0 items-center gap-1.5 rounded-xl px-3 py-2.5 text-xs font-semibold transition cursor-pointer bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 text-amber-500 dark:text-amber-300 border border-zinc-200 dark:border-transparent shadow-sm"
             >
               <Bell className="h-4 w-4" /> Novidades
+              {hasUnseenNews && (
+                <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" aria-hidden="true" />
+              )}
             </button>
             <button
               type="button"
@@ -4838,7 +5140,7 @@ export default function App() {
               {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>
           </div>
-          {showNews && <NewsPanel onClose={() => setShowNews(false)} />}
+          {showNews && <NewsPanel onClose={closeNewsPanel} hasUnseenNews={hasUnseenNews} isAutoNotification={isAutoNewsOpen} />}
           {showInstallHelp && <InstallHelpPanel onClose={() => setShowInstallHelp(false)} />}
         </div>
       </div>
@@ -4900,6 +5202,13 @@ export default function App() {
               <span>Anfitrião: <strong className="text-zinc-200">{roomState.hostName}</strong></span>
               <span>•</span>
               <span>{(roomState.members || []).length} na festa</span>
+              <span>•</span>
+              <span
+                className="inline-flex items-center gap-1 rounded-full border border-amber-500/35 bg-amber-500/10 px-2 py-0.5 text-[11px] font-bold text-amber-500 dark:text-amber-300"
+                title="Sua pontuação acumulada nesta festa"
+              >
+                Sua pontuação: {myPartyScore} pts
+              </span>
               {partyKing && (
                 <>
                   <span>•</span>
@@ -4964,13 +5273,15 @@ export default function App() {
             )}
           </button>
           <button
-            onClick={() => setShowNews(true)}
+            onClick={openNewsPanel}
             title="Novidades"
             aria-label="Abrir novidades"
             className="relative rounded-xl p-2 text-amber-500 dark:text-amber-300 cursor-pointer transition bg-white hover:bg-zinc-50 dark:bg-zinc-800 dark:hover:bg-zinc-700 border border-zinc-200 dark:border-transparent shadow-sm"
           >
             <Bell className="h-4 w-4" />
-            <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-amber-400" />
+            {hasUnseenNews && (
+              <span className="absolute right-1.5 top-1.5 h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
+            )}
           </button>
           <button
             onClick={() => {
@@ -5380,16 +5691,31 @@ export default function App() {
                               (Você)
                             </span>
                           )}
-                          {memberScore > 0 && (
-                            <span className="text-[10px] font-mono font-semibold text-amber-500/90 dark:text-amber-400/90 leading-none">
-                              {memberScore} pts
-                            </span>
-                          )}
+                          <span
+                            className={`text-[10px] font-mono font-semibold leading-none ${
+                              memberScore > 0
+                                ? 'text-amber-500/90 dark:text-amber-400/90'
+                                : 'text-zinc-500 dark:text-zinc-400'
+                            }`}
+                          >
+                            {memberScore} pts
+                          </span>
                         </div>
                       </div>
                     </div>
 
                     <div className="flex items-center shrink-0">
+                      {!isSelf && (
+                        <button
+                          type="button"
+                          title={`Marcar ${m.name} no chat`}
+                          onClick={() => handleMentionUserInChat(m.name)}
+                          className="text-zinc-400 hover:text-amber-500 dark:hover:text-amber-300 transition cursor-pointer px-1.5 py-1 rounded-lg hover:bg-zinc-200 dark:hover:bg-zinc-800 text-xs font-extrabold"
+                          aria-label={`Marcar ${m.name} no chat`}
+                        >
+                          @
+                        </button>
+                      )}
                       {isSelf && (
                         <button
                           type="button"
@@ -5465,8 +5791,15 @@ export default function App() {
               >
                 <MessageCircle className="w-3.5 h-3.5" /> Chat ({roomState.chat?.length || 0})
                 {unreadChatCount > 0 && activeTab !== 'chat' && (
-                  <span className="inline-flex items-center justify-center min-w-5 h-5 px-1 text-[10px] font-black text-white bg-red-600 rounded-full shadow-lg shadow-red-600/50 animate-pulse border border-zinc-900">
-                    {unreadChatCount > 99 ? '99+' : unreadChatCount}
+                  <span
+                    className={`inline-flex items-center justify-center min-w-5 h-5 px-1 text-[10px] font-black rounded-full shadow-lg animate-pulse border border-zinc-900 ${
+                      unreadMentionCount > 0
+                        ? 'bg-amber-400 text-zinc-950 shadow-amber-500/50'
+                        : 'bg-red-600 text-white shadow-red-600/50'
+                    }`}
+                    title={unreadMentionCount > 0 ? `Você foi marcado (${unreadMentionCount})` : undefined}
+                  >
+                    {unreadMentionCount > 0 ? `@ ${unreadChatCount > 99 ? '99+' : unreadChatCount}` : (unreadChatCount > 99 ? '99+' : unreadChatCount)}
                   </span>
                 )}
               </button>
@@ -6075,6 +6408,9 @@ export default function App() {
                         message={message}
                         isAuthor={message.senderId === userId && message.senderId !== 'system'}
                         isPartyKing={Boolean(partyKing && message.senderId === partyKing.id)}
+                        currentUserId={userId}
+                        currentUsername={username}
+                        onMentionUser={handleMentionUserInChat}
                         onEdit={handleEditChatMessage}
                         onDelete={handleDeleteChatMessage}
                       />
@@ -6121,20 +6457,89 @@ export default function App() {
                   </button>
                 </div>
                 {chatError && !showGifInput && <p className="mb-2 text-xs text-red-300">{chatError}</p>}
-                <form onSubmit={(event) => { event.preventDefault(); handleSendChat(); }} className="flex gap-2">
-                  <input
-                    ref={chatInputRef}
-                    value={chatInput}
-                    onChange={(event) => setChatInput(event.target.value)}
-                    maxLength={MAX_CHAT_CHARACTERS}
-                    placeholder="Escreva uma mensagem ou adicione emojis..."
-                    className="flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-sm focus:outline-none focus:border-red-500"
-                  />
-                  <span className="self-center text-[10px] text-zinc-600">{chatInput.length}/{MAX_CHAT_CHARACTERS}</span>
-                  <button type="submit" disabled={!chatInput.trim()} className="px-4 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white flex items-center gap-2 text-xs font-bold">
-                    <Send className="w-4 h-4" /> Enviar
-                  </button>
-                </form>
+                <div className="relative">
+                  {mentionQuery !== null && mentionCandidates.length > 0 && (
+                    <div
+                      className="absolute bottom-full left-0 right-0 mb-2 max-h-44 overflow-y-auto rounded-2xl border border-zinc-700 bg-zinc-900/95 p-1.5 shadow-2xl backdrop-blur-md z-20"
+                      role="listbox"
+                      aria-label="Marcar usuário"
+                    >
+                      <div className="px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-zinc-400">
+                        Marcar participante
+                      </div>
+                      {mentionCandidates.map((candidate, idx) => {
+                        const isHighlighted = idx === Math.min(mentionHighlightIndex, mentionCandidates.length - 1);
+                        const candidateScore = Number(roomState.partyScores?.[candidate.id]?.score) || 0;
+                        return (
+                          <button
+                            key={candidate.id}
+                            type="button"
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              handleSelectMentionCandidate(candidate.name);
+                            }}
+                            className={`flex w-full items-center justify-between gap-2 rounded-xl px-2.5 py-1.5 text-left text-xs transition cursor-pointer ${
+                              isHighlighted
+                                ? 'bg-amber-500/20 text-amber-200'
+                                : 'text-zinc-200 hover:bg-zinc-800'
+                            }`}
+                          >
+                            <span className="flex items-center gap-2 min-w-0">
+                              <img
+                                src={candidate.avatar || getRandomCuteAvatar(candidate.name)}
+                                alt=""
+                                className="h-5 w-5 rounded-full object-cover bg-zinc-800 shrink-0"
+                              />
+                              <span className="font-semibold truncate">@{candidate.name}</span>
+                            </span>
+                            <span className="text-[10px] font-mono text-amber-400/90 shrink-0">
+                              {candidateScore} pts
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                  <form onSubmit={(event) => { event.preventDefault(); handleSendChat(); }} className="flex gap-2">
+                    <input
+                      ref={chatInputRef}
+                      value={chatInput}
+                      onChange={(event) => handleChatInputChange(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (mentionQuery !== null && mentionCandidates.length > 0) {
+                          if (event.key === 'ArrowDown') {
+                            event.preventDefault();
+                            setMentionHighlightIndex((prev) => (prev + 1) % mentionCandidates.length);
+                            return;
+                          }
+                          if (event.key === 'ArrowUp') {
+                            event.preventDefault();
+                            setMentionHighlightIndex((prev) => (prev - 1 + mentionCandidates.length) % mentionCandidates.length);
+                            return;
+                          }
+                          if (event.key === 'Enter' || event.key === 'Tab') {
+                            event.preventDefault();
+                            const chosen = mentionCandidates[Math.min(mentionHighlightIndex, mentionCandidates.length - 1)];
+                            if (chosen) handleSelectMentionCandidate(chosen.name);
+                            return;
+                          }
+                          if (event.key === 'Escape') {
+                            event.preventDefault();
+                            setMentionQuery(null);
+                            return;
+                          }
+                        }
+                      }}
+                      maxLength={MAX_CHAT_CHARACTERS}
+                      placeholder="Escreva uma mensagem, use @ para marcar..."
+                      className="flex-1 min-w-0 px-3.5 py-2.5 rounded-xl bg-zinc-950 border border-zinc-800 text-sm focus:outline-none focus:border-red-500"
+                    />
+                    <span className="self-center text-[10px] text-zinc-600">{chatInput.length}/{MAX_CHAT_CHARACTERS}</span>
+                    <button type="submit" disabled={!chatInput.trim()} className="px-4 rounded-xl bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white flex items-center gap-2 text-xs font-bold">
+                      <Send className="w-4 h-4" /> Enviar
+                    </button>
+                  </form>
+                </div>
                 <p className="mt-2 text-[10px] text-zinc-600">Até {MAX_CHAT_CHARACTERS} caracteres por mensagem; GIFs aparecem em formato sticker.</p>
               </div>
             </div>
@@ -6358,7 +6763,7 @@ export default function App() {
           </div>
         </div>
       )}
-      {showNews && <NewsPanel onClose={() => setShowNews(false)} />}
+      {showNews && <NewsPanel onClose={closeNewsPanel} hasUnseenNews={hasUnseenNews} isAutoNotification={isAutoNewsOpen} />}
       {showInstallHelp && <InstallHelpPanel onClose={() => setShowInstallHelp(false)} />}
     </div>
   );
